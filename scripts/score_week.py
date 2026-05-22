@@ -300,8 +300,10 @@ def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
 
         for col in metric_cols:
             feat_name = METRIC_RENAME.get(col, col)
-            row[f"{feat_name}_home"] = float(home_m[col].iloc[0]) if len(home_m) > 0 and col in home_m.columns else np.nan
-            row[f"{feat_name}_away"] = float(away_m[col].iloc[0]) if len(away_m) > 0 and col in away_m.columns else np.nan
+            h_val = home_m[col].iloc[0] if len(home_m) > 0 and col in home_m.columns else None
+            a_val = away_m[col].iloc[0] if len(away_m) > 0 and col in away_m.columns else None
+            row[f"{feat_name}_home"] = float(h_val) if h_val is not None else np.nan
+            row[f"{feat_name}_away"] = float(a_val) if a_val is not None else np.nan
 
         line_data = lines.get(game_id, {})
         row["dk_spread"] = float(line_data.get("spread_home", 0) or 0)
