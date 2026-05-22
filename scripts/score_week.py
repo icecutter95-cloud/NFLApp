@@ -120,13 +120,46 @@ def detect_rlm(public_bet_pct: float | None, line_movement: float) -> dict:
 # ---------------------------------------------------------------------------
 
 def fetch_team_metrics(season: int, week: int) -> pd.DataFrame:
-    """Pull team_metrics for (season, week-1) — metrics going INTO this week."""
+    """Pull team_metrics for (season, week-1) — metrics going INTO this week.
+
+    Fallback chain when no data exists for the requested season/week:
+      1. Any earlier week in the same season (most recent)
+      2. End of the previous season (pre-season / week 1 of new season)
+    """
+    # Primary: exact week
     resp = (supabase.table("team_metrics")
             .select("*")
             .eq("season", season)
             .eq("week", week - 1)
             .execute())
-    return pd.DataFrame(resp.data)
+    if resp.data:
+        return pd.DataFrame(resp.data)
+
+    # Fallback 1: most recent week available in this season
+    resp = (supabase.table("team_metrics")
+            .select("*")
+            .eq("season", season)
+            .order("week", desc=True)
+            .limit(32)
+            .execute())
+    if resp.data:
+        print(f"  Metrics fallback: using latest available week in {season} season")
+        return pd.DataFrame(resp.data)
+
+    # Fallback 2: end of previous season (handles pre-season / new-season week 1)
+    prev = season - 1
+    resp = (supabase.table("team_metrics")
+            .select("*")
+            .eq("season", prev)
+            .order("week", desc=True)
+            .limit(32)
+            .execute())
+    if resp.data:
+        print(f"  Metrics fallback: no {season} data found, using end of {prev} season")
+        return pd.DataFrame(resp.data)
+
+    print("  WARNING: No team metrics found — model inputs will be zeroed out")
+    return pd.DataFrame()
 
 
 def fetch_latest_lines(game_ids: list) -> dict:
@@ -236,10 +269,12 @@ def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
     metric_cols = [c for c in metrics.columns
                    if c not in ("id", "team", "season", "week", "updated_at")]
 
+    has_metrics = not metrics.empty and "team" in metrics.columns
+
     rows = []
     for _, game in games.iterrows():
-        home_m = metrics[metrics["team"] == game.get("home_team", "")]
-        away_m = metrics[metrics["team"] == game.get("away_team", "")]
+        home_m = metrics[metrics["team"] == game.get("home_team", "")] if has_metrics else pd.DataFrame()
+        away_m = metrics[metrics["team"] == game.get("away_team", "")] if has_metrics else pd.DataFrame()
 
         game_id = game.get("game_id", f"{game['home_team']}_{game['away_team']}_{game['week']}")
 
