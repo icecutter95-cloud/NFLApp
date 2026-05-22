@@ -446,11 +446,18 @@ def run_weekly_scoring(season: int, week: int):
     spread_model = joblib.load(MODELS_DIR / "spread_model.joblib")
     total_model = joblib.load(MODELS_DIR / "total_model.joblib")
 
-    # Score
-    spread_feat_cols = [f for f in SPREAD_FEATURES if f in features.columns]
-    total_feat_cols = [f for f in TOTAL_FEATURES if f in features.columns]
+    # Score — use the exact feature list the model was trained on,
+    # not the config list (they may differ if weather cols weren't in training data).
+    spread_feat_cols = spread_model.get_booster().feature_names
+    total_feat_cols  = total_model.get_booster().feature_names
+
+    # Add any missing columns the model expects (fill with 0)
+    for col in spread_feat_cols + total_feat_cols:
+        if col not in features.columns:
+            features[col] = 0.0
+
     features["model_spread"] = spread_model.predict(features[spread_feat_cols].fillna(0))
-    features["model_total"] = total_model.predict(features[total_feat_cols].fillna(0))
+    features["model_total"]  = total_model.predict(features[total_feat_cols].fillna(0))
 
     # Build projection rows + signals
     projections = build_projections(features, lh_by_game, pub, opening)
