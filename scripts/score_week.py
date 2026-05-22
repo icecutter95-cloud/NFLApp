@@ -263,6 +263,19 @@ METRIC_RENAME = {
 }
 
 
+def _build_game_time(gameday, gametime) -> str | None:
+    """Combine nfl_data_py gameday ('2026-09-10') + gametime ('20:20')
+    into a full ISO timestamp Postgres can parse as timestamptz."""
+    try:
+        day = str(gameday).strip()
+        t   = str(gametime).strip()
+        if day and t and t not in ("", "nan", "None", "NaT"):
+            return f"{day}T{t}:00"   # e.g. "2026-09-10T20:20:00"
+    except Exception:
+        pass
+    return None
+
+
 def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
                          lines: dict, weather: dict) -> pd.DataFrame:
     """Build one feature row per game, ready to pass to the models."""
@@ -285,7 +298,7 @@ def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
             "home_team": game["home_team"],
             "away_team": game["away_team"],
             "game_date": str(game.get("gameday", "")),
-            "game_time": str(game.get("gametime", "")),
+            "game_time": _build_game_time(game.get("gameday"), game.get("gametime")),
             "home_field_advantage": HFA_OVERRIDES.get(game["home_team"], HFA_DEFAULT),
             "is_divisional": int(game.get("div_game", 0) or 0),
             "week_number": int(game["week"]),
