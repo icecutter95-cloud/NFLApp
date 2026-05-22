@@ -81,6 +81,8 @@ SPREAD_FEATURES = (
         "had_bye_home",
         "had_bye_away",
         "week_number",
+        # Market line — the closing spread is a strong prior; model learns to adjust off it
+        "market_spread_home",
     ]
 )
 
@@ -89,6 +91,7 @@ TOTAL_FEATURES = SPREAD_FEATURES + [
     "temp_fahrenheit",
     "precipitation_prob",
     "is_dome",
+    "market_total",
 ]
 
 # ---------------------------------------------------------------------------

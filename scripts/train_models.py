@@ -69,10 +69,20 @@ XGBOOST_PARAMS = {
 }
 
 
-def train_model(X_train: pd.DataFrame, y_train: pd.Series, model_name: str) -> XGBRegressor:
+def recency_weights(seasons: pd.Series) -> np.ndarray:
+    """Exponential recency weighting: each additional season back gets weight * 0.75.
+    Most recent season gets weight 1.0; 5 seasons back gets ~0.24."""
+    max_season = seasons.max()
+    return (0.75 ** (max_season - seasons)).values
+
+
+def train_model(X_train: pd.DataFrame, y_train: pd.Series,
+                df_train: pd.DataFrame, model_name: str) -> XGBRegressor:
     print(f"\nTraining {model_name} on {len(X_train)} rows, {X_train.shape[1]} features...")
+    weights = recency_weights(df_train["season"])
     model = XGBRegressor(**XGBOOST_PARAMS)
-    model.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=False)
+    model.fit(X_train, y_train, sample_weight=weights,
+              eval_set=[(X_train, y_train)], verbose=False)
     return model
 
 
@@ -170,7 +180,7 @@ def main():
     print("SPREAD MODEL (predicts: home_margin)")
     print("=" * 60)
     X_train_s, y_train_s, df_train_s = load_split(TRAIN_SEASONS, SPREAD_FEATURES, "home_margin")
-    spread_model = train_model(X_train_s, y_train_s, "spread_model")
+    spread_model = train_model(X_train_s, y_train_s, df_train_s, "spread_model")
 
     spread_path = MODELS_DIR / "spread_model.joblib"
     joblib.dump(spread_model, spread_path)
@@ -194,7 +204,7 @@ def main():
     print("TOTAL MODEL (predicts: combined_score)")
     print("=" * 60)
     X_train_t, y_train_t, df_train_t = load_split(TRAIN_SEASONS, TOTAL_FEATURES, "combined_score")
-    total_model = train_model(X_train_t, y_train_t, "total_model")
+    total_model = train_model(X_train_t, y_train_t, df_train_t, "total_model")
 
     total_path = MODELS_DIR / "total_model.joblib"
     joblib.dump(total_model, total_path)

@@ -179,7 +179,13 @@ def main():
     print("Adding closing lines...")
     df = add_closing_lines(df)
 
-    # 5. Targets
+    # 5. Expose market lines as model features
+    # The closing line is the market's best estimate — giving it to the model
+    # lets it learn to adjust *off* the market rather than predict from scratch.
+    df["market_spread_home"] = df["closing_spread_home"]
+    df["market_total"]       = df["closing_total"]
+
+    # 6. Targets
     df = add_targets(df)
 
     # 6. Drop rows without scores or lines (can't train/evaluate on them)

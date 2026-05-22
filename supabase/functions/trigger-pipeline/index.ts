@@ -1,12 +1,14 @@
 /**
- * trigger-pipeline — triggers the GitHub Actions score-week workflow.
+ * trigger-pipeline — triggers GitHub Actions workflows.
  *
  * Secrets required in Supabase (Dashboard → Edge Functions → Secrets):
  *   GITHUB_PAT   — Personal Access Token with "workflow" scope
- *   GITHUB_OWNER — your GitHub username (e.g. "icecu")
+ *   GITHUB_OWNER — your GitHub username
  *   GITHUB_REPO  — your repo name (e.g. "NFLApp")
  *
- * Request body: { season: number, week: number }
+ * Request body:
+ *   { action: 'score-week',     season: number, week: number }
+ *   { action: 'update-metrics', season: number }
  */
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
@@ -20,7 +22,7 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
   try {
-    const { season, week } = await req.json()
+    const { action, season, week } = await req.json()
 
     const owner = Deno.env.get('GITHUB_OWNER')
     const repo  = Deno.env.get('GITHUB_REPO')
@@ -33,8 +35,13 @@ serve(async (req) => {
       )
     }
 
+    const workflow = action === 'update-metrics' ? 'update-metrics.yml' : 'score-week.yml'
+    const inputs   = action === 'update-metrics'
+      ? { season: String(season) }
+      : { season: String(season), week: String(week) }
+
     const ghRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/actions/workflows/score-week.yml/dispatches`,
+      `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
       {
         method: 'POST',
         headers: {
@@ -43,10 +50,7 @@ serve(async (req) => {
           'Content-Type': 'application/json',
           'User-Agent': 'NFLApp/1.0',
         },
-        body: JSON.stringify({
-          ref: 'main',
-          inputs: { season: String(season), week: String(week) },
-        }),
+        body: JSON.stringify({ ref: 'main', inputs }),
       },
     )
 
@@ -59,7 +63,7 @@ serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ success: true, message: `Pipeline triggered — season ${season}, week ${week}` }),
+      JSON.stringify({ success: true, message: `${workflow} triggered — season ${season}${week ? ` week ${week}` : ''}` }),
       { headers: { ...CORS, 'Content-Type': 'application/json' } },
     )
   } catch (err) {

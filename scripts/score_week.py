@@ -459,6 +459,10 @@ def run_weekly_scoring(season: int, week: int):
     spread_model = joblib.load(MODELS_DIR / "spread_model.joblib")
     total_model = joblib.load(MODELS_DIR / "total_model.joblib")
 
+    # Expose current DK lines as the market feature the model was trained with
+    features["market_spread_home"] = features["dk_spread"]
+    features["market_total"]       = features["dk_total"]
+
     # Score — use the exact feature list the model was trained on,
     # not the config list (they may differ if weather cols weren't in training data).
     spread_feat_cols = spread_model.get_booster().feature_names

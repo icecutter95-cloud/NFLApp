@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BarChart2, FlaskConical, RefreshCw, Zap, Play } from 'lucide-react'
+import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 export default function Header({
@@ -7,10 +7,12 @@ export default function Header({
   onSeasonChange, onWeekChange,
   view, onViewChange,
 }) {
-  const [oddsStatus, setOddsStatus]   = useState(null)  // null | 'loading' | 'ok' | 'error'
-  const [projStatus, setProjStatus]   = useState(null)
-  const [oddsMsg, setOddsMsg]         = useState('')
-  const [projMsg, setProjMsg]         = useState('')
+  const [oddsStatus,    setOddsStatus]    = useState(null)  // null | 'loading' | 'ok' | 'error'
+  const [projStatus,    setProjStatus]    = useState(null)
+  const [metricsStatus, setMetricsStatus] = useState(null)
+  const [oddsMsg,    setOddsMsg]    = useState('')
+  const [projMsg,    setProjMsg]    = useState('')
+  const [metricsMsg, setMetricsMsg] = useState('')
 
   const closed  = bets.filter(b => b.result !== 'pending')
   const wins    = closed.filter(b => b.result === 'win').length
@@ -36,12 +38,29 @@ export default function Header({
     }
   }
 
+  async function updateMetrics() {
+    setMetricsStatus('loading')
+    setMetricsMsg('')
+    try {
+      const { data, error } = await supabase.functions.invoke('trigger-pipeline', {
+        body: { action: 'update-metrics', season },
+      })
+      if (error) throw error
+      setMetricsStatus('ok')
+      setMetricsMsg('Running (~5 min)')
+      setTimeout(() => setMetricsStatus(null), 10000)
+    } catch (err) {
+      setMetricsStatus('error')
+      setMetricsMsg('Failed')
+    }
+  }
+
   async function runProjections() {
     setProjStatus('loading')
     setProjMsg('')
     try {
       const { data, error } = await supabase.functions.invoke('trigger-pipeline', {
-        body: { season, week },
+        body: { action: 'score-week', season, week },
       })
       if (error) throw error
       setProjStatus('ok')
@@ -138,6 +157,16 @@ export default function Header({
           idleLabel: 'Refresh Odds',
           loadingLabel: 'Fetching…',
           okLabel: 'Updated',
+        })}
+
+        {pipelineBtn({
+          onClick: updateMetrics,
+          status: metricsStatus,
+          msg: metricsMsg,
+          idleIcon: <DatabaseZap size={11} />,
+          idleLabel: 'Update Metrics',
+          loadingLabel: 'Queuing…',
+          okLabel: 'Queued',
         })}
 
         {pipelineBtn({
