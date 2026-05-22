@@ -1,0 +1,11 @@
+# Minimal requirements for GitHub Actions (score_week.py + download_models.py only).
+# No strict version pins — lets pip resolve compatible versions on Ubuntu.
+nfl-data-py
+pandas>=1.5.0
+numpy>=1.24.0
+pyarrow>=10.0.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+joblib>=1.3.0
+supabase>=2.4.0
+python-dotenv>=1.0.0
