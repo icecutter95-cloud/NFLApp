@@ -26,10 +26,11 @@ OPENWEATHER_API_KEY = os.getenv("WEATHER_API_KEY") or os.getenv("OPENWEATHER_API
 # ---------------------------------------------------------------------------
 # Season splits
 # ---------------------------------------------------------------------------
-TRAIN_SEASONS = list(range(2018, 2022))       # 2018–2021
-VALIDATE_SEASONS = [2022, 2023]
-TEST_SEASON = 2024
-ALL_HISTORICAL_SEASONS = list(range(2018, 2025))  # 2018–2024
+TRAIN_SEASONS = list(range(2018, 2023))       # 2018–2022 (5 seasons)
+VALIDATE_SEASONS = [2023, 2024]               # out-of-sample evaluation
+TEST_SEASON = 2025                             # 2025 is now complete — holdout
+ALL_HISTORICAL_SEASONS = list(range(2018, 2026))  # 2018–2025 (includes completed 2025 season)
+CURRENT_SEASON = 2026                          # upcoming season for live projections
 
 # ---------------------------------------------------------------------------
 # Home field advantage

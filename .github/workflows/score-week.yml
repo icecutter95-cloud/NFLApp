@@ -1,0 +1,45 @@
+name: Score Week
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: 'NFL Season year (e.g. 2026)'
+        required: true
+        default: '2026'
+      week:
+        description: 'NFL Week number (1–18)'
+        required: true
+        default: '1'
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download models from Supabase Storage
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/download_models.py
+
+      - name: Run weekly scoring
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+        run: python scripts/score_week.py ${{ github.event.inputs.season }} ${{ github.event.inputs.week }}

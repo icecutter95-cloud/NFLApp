@@ -4,24 +4,25 @@ import Header from './components/Header'
 import FilterBar from './components/FilterBar'
 import EdgeList from './components/EdgeList'
 import PerformancePanel from './components/PerformancePanel'
+import BacktestPanel from './components/BacktestPanel'
 
-const CUR_SEASON = 2025
-const ALL_WEEKS = Array.from({ length: 18 }, (_, i) => i + 1)
+const CUR_SEASON = 2026
+const ALL_WEEKS  = Array.from({ length: 18 }, (_, i) => i + 1)
 
 export default function App() {
-  const [season, setSeason] = useState(CUR_SEASON)
-  const [week, setWeek] = useState(1)
+  const [season, setSeason]           = useState(CUR_SEASON)
+  const [week, setWeek]               = useState(1)
   const [projections, setProjections] = useState([])
-  const [bets, setBets] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showPerformance, setShowPerformance] = useState(false)
-  const [filters, setFilters] = useState({
-    betType: 'all',
+  const [bets, setBets]               = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [view, setView]               = useState('edges')  // 'edges' | 'performance' | 'backtest'
+  const [filters, setFilters]         = useState({
+    betType:    'all',
     confidence: 'all',
-    steamOnly: false,
-    rlmOnly: false,
-    minEdge: 0,
-    sortBy: 'ev_pct',
+    steamOnly:  false,
+    rlmOnly:    false,
+    minEdge:    0,
+    sortBy:     'ev_pct',
   })
 
   useEffect(() => {
@@ -50,15 +51,15 @@ export default function App() {
 
   const filtered = useMemo(() => {
     let rows = projections
-    if (filters.betType !== 'all') rows = rows.filter(p => p.bet_type === filters.betType)
-    if (filters.confidence !== 'all') rows = rows.filter(p => p.confidence_tier === filters.confidence)
-    if (filters.steamOnly) rows = rows.filter(p => p.steam_flag)
-    if (filters.rlmOnly) rows = rows.filter(p => p.rlm_flag)
-    if (filters.minEdge > 0) rows = rows.filter(p => (p.edge_points ?? 0) >= filters.minEdge)
+    if (filters.betType    !== 'all') rows = rows.filter(p => p.bet_type          === filters.betType)
+    if (filters.confidence !== 'all') rows = rows.filter(p => p.confidence_tier   === filters.confidence)
+    if (filters.steamOnly)             rows = rows.filter(p => p.steam_flag)
+    if (filters.rlmOnly)               rows = rows.filter(p => p.rlm_flag)
+    if (filters.minEdge > 0)           rows = rows.filter(p => (p.edge_points ?? 0) >= filters.minEdge)
 
     return [...rows].sort((a, b) => {
-      if (filters.sortBy === 'ev_pct') return (b.ev_pct ?? 0) - (a.ev_pct ?? 0)
-      if (filters.sortBy === 'edge') return (b.edge_points ?? 0) - (a.edge_points ?? 0)
+      if (filters.sortBy === 'ev_pct')    return (b.ev_pct ?? 0) - (a.ev_pct ?? 0)
+      if (filters.sortBy === 'edge')      return (b.edge_points ?? 0) - (a.edge_points ?? 0)
       if (filters.sortBy === 'confidence') {
         const order = { A: 0, B: 1, C: 2, watch: 3 }
         return (order[a.confidence_tier] ?? 4) - (order[b.confidence_tier] ?? 4)
@@ -77,18 +78,20 @@ export default function App() {
         bets={bets}
         onSeasonChange={setSeason}
         onWeekChange={setWeek}
-        showPerformance={showPerformance}
-        onTogglePerformance={() => setShowPerformance(p => !p)}
+        view={view}
+        onViewChange={setView}
       />
 
-      {showPerformance ? (
-        <PerformancePanel bets={bets} />
-      ) : (
+      {view === 'edges' && (
         <>
           <FilterBar filters={filters} onChange={setFilters} />
           <EdgeList projections={filtered} loading={loading} onBetLogged={fetchData} />
         </>
       )}
+
+      {view === 'performance' && <PerformancePanel bets={bets} />}
+
+      {view === 'backtest' && <BacktestPanel />}
     </div>
   )
 }

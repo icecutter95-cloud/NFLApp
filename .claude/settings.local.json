@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(git -C \"C:\\\\Users\\\\icecu\\\\OneDrive\\\\Documents\\\\NFLApp\" log --oneline -5)",
+      "Bash(npm run *)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\icecu\\\\OneDrive\\\\Documents\\\\NFLApp\\\\frontend\"; Start-Process powershell -ArgumentList \"-NoExit\", \"-Command\", \"npm run dev\" -WindowStyle Normal)"
+    ]
+  }
+}
