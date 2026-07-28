@@ -163,40 +163,62 @@ def fetch_team_metrics(season: int, week: int) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def fetch_latest_lines(game_ids: list) -> dict:
-    """Most recent line_history entry per game."""
+def fetch_latest_lines(team_pairs: list) -> dict:
+    """Most recent line_history entry per (home_team, away_team) game.
+
+    line_history.game_id is The Odds API's own opaque event ID, not the
+    nfl_data_py game_id used everywhere else in the pipeline — the two never
+    match. refresh-odds stores home_team/away_team (translated to standard
+    abbreviations) alongside it specifically so this join can happen here.
+    """
+    if not team_pairs:
+        return {}
+    home_teams = list({h for h, _ in team_pairs})
+    valid_pairs = set(team_pairs)
     resp = (supabase.table("line_history")
-            .select("game_id, spread_home, total, recorded_at")
-            .in_("game_id", game_ids)
+            .select("home_team, away_team, spread_home, total, recorded_at")
+            .in_("home_team", home_teams)
             .order("recorded_at", desc=True)
             .execute())
     lines: dict = {}
     for row in resp.data:
-        if row["game_id"] not in lines:
-            lines[row["game_id"]] = row
+        key = (row.get("home_team"), row.get("away_team"))
+        if key in valid_pairs and key not in lines:
+            lines[key] = row
     return lines
 
 
-def fetch_line_history(game_ids: list) -> dict:
-    """Full line history per game (for steam detection)."""
+def fetch_line_history(team_pairs: list) -> dict:
+    """Full line history per (home_team, away_team) game (for steam detection)."""
+    if not team_pairs:
+        return {}
+    home_teams = list({h for h, _ in team_pairs})
+    valid_pairs = set(team_pairs)
     resp = (supabase.table("line_history")
-            .select("game_id, spread_home, total, recorded_at")
-            .in_("game_id", game_ids)
+            .select("home_team, away_team, spread_home, total, recorded_at")
+            .in_("home_team", home_teams)
             .order("recorded_at")
             .execute())
     history: dict = {}
     for row in resp.data:
-        history.setdefault(row["game_id"], []).append(row)
+        key = (row.get("home_team"), row.get("away_team"))
+        if key in valid_pairs:
+            history.setdefault(key, []).append(row)
     return history
 
 
-def fetch_opening_lines(game_ids: list) -> dict:
+def fetch_opening_lines(team_pairs: list) -> dict:
+    if not team_pairs:
+        return {}
+    home_teams = list({h for h, _ in team_pairs})
+    valid_pairs = set(team_pairs)
     resp = (supabase.table("line_history")
-            .select("game_id, spread_home, total")
+            .select("home_team, away_team, spread_home, total")
             .eq("is_opening", True)
-            .in_("game_id", game_ids)
+            .in_("home_team", home_teams)
             .execute())
-    return {row["game_id"]: row for row in resp.data}
+    return {(row.get("home_team"), row.get("away_team")): row
+            for row in resp.data if (row.get("home_team"), row.get("away_team")) in valid_pairs}
 
 
 def fetch_weather(game_ids: list) -> dict:
@@ -324,7 +346,7 @@ def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
             row[f"{feat_name}_home"] = float(h_val) if h_val is not None else np.nan
             row[f"{feat_name}_away"] = float(a_val) if a_val is not None else np.nan
 
-        line_data = lines.get(game_id, {})
+        line_data = lines.get((game["home_team"], game["away_team"]), {})
         row["dk_spread"] = float(line_data.get("spread_home", 0) or 0)
         row["dk_total"] = float(line_data.get("total", 45) or 45)
 
@@ -349,9 +371,10 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
 
     for _, row in features.iterrows():
         game_id = row["game_id"]
-        lh = lh_by_game.get(game_id, [])
+        team_pair = (row["home_team"], row["away_team"])
+        lh = lh_by_game.get(team_pair, [])
         pub = pub_by_game.get(game_id, {})
-        opening = opening_by_game.get(game_id, {})
+        opening = opening_by_game.get(team_pair, {})
 
         # Line movement since open
         open_spread = opening.get("spread_home", row["dk_spread"])
@@ -468,12 +491,13 @@ def run_weekly_scoring(season: int, week: int):
     print(f"  {len(games)} games found")
 
     game_ids = games["game_id"].tolist() if "game_id" in games.columns else []
+    team_pairs = list(zip(games["home_team"], games["away_team"]))
 
     # Fetch all data sources
     metrics = fetch_team_metrics(season, week)
-    lines = fetch_latest_lines(game_ids)
-    lh_by_game = fetch_line_history(game_ids)
-    opening = fetch_opening_lines(game_ids)
+    lines = fetch_latest_lines(team_pairs)
+    lh_by_game = fetch_line_history(team_pairs)
+    opening = fetch_opening_lines(team_pairs)
     weather = fetch_weather(game_ids)
     pub = fetch_public_betting(game_ids)
 
@@ -504,8 +528,16 @@ def run_weekly_scoring(season: int, week: int):
     # Build projection rows + signals
     projections = build_projections(features, lh_by_game, pub, opening)
 
-    # Upsert to Supabase
-    supabase.table("projections").upsert(projections).execute()
+    # Fully replace this week's projections rather than upsert-in-place.
+    # A row that qualified in a previous run (e.g. a total bet that cleared
+    # TOTALS_MIN_EDGE due to a stale/mismatched dk_total) but doesn't qualify
+    # this run would otherwise be silently orphaned forever — upsert() only
+    # touches rows present in the current payload, it never removes rows that
+    # are no longer emitted. Delete-then-insert guarantees the table always
+    # reflects exactly the current model's output for this week, nothing stale.
+    supabase.table("projections").delete().eq("season", season).eq("week", week).execute()
+    if projections:
+        supabase.table("projections").insert(projections).execute()
     print(f"  Upserted {len(projections)} projection rows")
 
     # Print summary

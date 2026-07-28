@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS projections (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS line_history (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    game_id     TEXT NOT NULL,
+    game_id     TEXT NOT NULL,   -- The Odds API's own event ID; NOT the nfl_data_py game_id.
+                                  -- Joins to games happen via (home_team, away_team) below.
+    home_team   TEXT,            -- standard abbreviation (e.g. "KC"), translated from Odds API full name
+    away_team   TEXT,
     recorded_at TIMESTAMPTZ DEFAULT NOW(),
     spread_home REAL,
     total       REAL,
@@ -186,6 +189,7 @@ CREATE TABLE IF NOT EXISTS team_metrics (
 CREATE INDEX IF NOT EXISTS idx_projections_week   ON projections (season, week);
 CREATE INDEX IF NOT EXISTS idx_projections_game   ON projections (game_id);
 CREATE INDEX IF NOT EXISTS idx_line_history_game  ON line_history (game_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_line_history_teams ON line_history (home_team, away_team, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_bets_season        ON bets (season, week);
 CREATE INDEX IF NOT EXISTS idx_public_betting_game ON public_betting (game_id);
 CREATE INDEX IF NOT EXISTS idx_team_metrics_team  ON team_metrics (team, season, week);

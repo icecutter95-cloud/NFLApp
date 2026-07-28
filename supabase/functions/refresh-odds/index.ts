@@ -14,6 +14,48 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// The Odds API returns full team names ("Los Angeles Rams"); the rest of the
+// pipeline (nfl_data_py schedules, team_metrics, projections) keys everything
+// by standard abbreviation. Without this translation, line_history rows were
+// keyed only by the Odds API's own opaque event ID, which never matches the
+// nfl_data_py game_id used everywhere else — so every downstream lookup
+// silently fell back to a default line (0 spread / 45 total) for every game.
+// NOTE: nfl_data_py labels the Rams "LA", not "LAR".
+const TEAM_NAME_TO_ABBR: Record<string, string> = {
+  "Arizona Cardinals": "ARI",
+  "Atlanta Falcons": "ATL",
+  "Baltimore Ravens": "BAL",
+  "Buffalo Bills": "BUF",
+  "Carolina Panthers": "CAR",
+  "Chicago Bears": "CHI",
+  "Cincinnati Bengals": "CIN",
+  "Cleveland Browns": "CLE",
+  "Dallas Cowboys": "DAL",
+  "Denver Broncos": "DEN",
+  "Detroit Lions": "DET",
+  "Green Bay Packers": "GB",
+  "Houston Texans": "HOU",
+  "Indianapolis Colts": "IND",
+  "Jacksonville Jaguars": "JAX",
+  "Kansas City Chiefs": "KC",
+  "Las Vegas Raiders": "LV",
+  "Los Angeles Chargers": "LAC",
+  "Los Angeles Rams": "LA",
+  "Miami Dolphins": "MIA",
+  "Minnesota Vikings": "MIN",
+  "New England Patriots": "NE",
+  "New Orleans Saints": "NO",
+  "New York Giants": "NYG",
+  "New York Jets": "NYJ",
+  "Philadelphia Eagles": "PHI",
+  "Pittsburgh Steelers": "PIT",
+  "San Francisco 49ers": "SF",
+  "Seattle Seahawks": "SEA",
+  "Tampa Bay Buccaneers": "TB",
+  "Tennessee Titans": "TEN",
+  "Washington Commanders": "WAS",
+};
+
 interface OddsApiGame {
   id: string;
   home_team: string;
@@ -30,6 +72,8 @@ interface OddsApiGame {
 
 function parseOddsResponse(data: OddsApiGame[]): Array<{
   game_id: string;
+  home_team: string | null;
+  away_team: string | null;
   spread_home: number | null;
   total: number | null;
   book: string;
@@ -52,6 +96,8 @@ function parseOddsResponse(data: OddsApiGame[]): Array<{
 
     rows.push({
       game_id: game.id,
+      home_team: TEAM_NAME_TO_ABBR[game.home_team] ?? null,
+      away_team: TEAM_NAME_TO_ABBR[game.away_team] ?? null,
       spread_home: homeSpreadOutcome?.point ?? null,
       total: overOutcome?.point ?? null,
       book: "draftkings",
