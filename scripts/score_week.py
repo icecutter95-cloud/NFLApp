@@ -365,6 +365,15 @@ def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
 # Projection rows
 # ---------------------------------------------------------------------------
 
+def _safe_float(val) -> float | None:
+    """Convert to a JSON-serializable float, or None for NaN/missing.
+    (Postgres/Supabase reject NaN as a REAL value.)"""
+    if val is None:
+        return None
+    val = float(val)
+    return None if np.isnan(val) else val
+
+
 def build_projections(features: pd.DataFrame, lh_by_game: dict,
                       pub_by_game: dict, opening_by_game: dict) -> list:
     projections = []
@@ -424,6 +433,12 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             "weather_adj": 0.0,
             "is_dome": bool(row["is_dome"]),
             "qb_override": False,
+            "home_epa_off": _safe_float(row.get("epa_per_play_off_L4_home")),
+            "away_epa_off": _safe_float(row.get("epa_per_play_off_L4_away")),
+            "home_epa_def": _safe_float(row.get("epa_per_play_def_L4_home")),
+            "away_epa_def": _safe_float(row.get("epa_per_play_def_L4_away")),
+            "home_cpoe": _safe_float(row.get("cpoe_L4_home")),
+            "away_cpoe": _safe_float(row.get("cpoe_L4_away")),
         })
 
         # --- Total ---
@@ -471,6 +486,12 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             "weather_adj": round(weather_adj, 1),
             "is_dome": bool(row["is_dome"]),
             "qb_override": False,
+            "home_epa_off": _safe_float(row.get("epa_per_play_off_L4_home")),
+            "away_epa_off": _safe_float(row.get("epa_per_play_off_L4_away")),
+            "home_epa_def": _safe_float(row.get("epa_per_play_def_L4_home")),
+            "away_epa_def": _safe_float(row.get("epa_per_play_def_L4_away")),
+            "home_cpoe": _safe_float(row.get("cpoe_L4_home")),
+            "away_cpoe": _safe_float(row.get("cpoe_L4_away")),
         })
 
     return projections

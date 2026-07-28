@@ -29,8 +29,17 @@ CREATE TABLE IF NOT EXISTS projections (
     weather_adj      REAL DEFAULT 0,
     is_dome          BOOLEAN DEFAULT FALSE,
     qb_override      BOOLEAN DEFAULT FALSE,
+    -- Model Inputs panel (frontend GameDetailPanel) — snapshot of the
+    -- rolling metrics that went into this game's prediction
+    home_epa_off     REAL,
+    away_epa_off     REAL,
+    home_epa_def     REAL,
+    away_epa_def     REAL,
+    home_cpoe        REAL,
+    away_cpoe        REAL,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
-    updated_at       TIMESTAMPTZ DEFAULT NOW()
+    updated_at       TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (game_id, bet_type)
 );
 
 -- ============================================================

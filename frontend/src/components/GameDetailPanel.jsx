@@ -14,8 +14,11 @@ export default function GameDetailPanel({ projection: p, onBetLogged }) {
   }, [p.game_id])
 
   async function fetchDetail() {
+    // line_history.game_id is The Odds API's own opaque event ID, not the
+    // nfl_data_py game_id used everywhere else — join on the team pair instead
+    // (refresh-odds stores home_team/away_team specifically for this).
     const [lh, pb, wx] = await Promise.all([
-      supabase.from('line_history').select('*').eq('game_id', p.game_id).order('recorded_at'),
+      supabase.from('line_history').select('*').eq('home_team', p.home_team).eq('away_team', p.away_team).order('recorded_at'),
       supabase.from('public_betting').select('*').eq('game_id', p.game_id).order('recorded_at', { ascending: false }).limit(1),
       supabase.from('weather').select('*').eq('game_id', p.game_id).single(),
     ])
