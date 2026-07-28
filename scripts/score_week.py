@@ -99,8 +99,18 @@ def assign_confidence_tier(edge: float, steam: bool, rlm_flag: bool,
 # Steam / RLM detection
 # ---------------------------------------------------------------------------
 
-def detect_steam(line_history: list, window_hours: int = 2, threshold: float = 1.0) -> bool:
-    """True if line moved >= threshold points within the last window_hours."""
+def detect_steam(line_history: list, market: str = "spread",
+                 window_hours: int = 2, threshold: float = 1.0) -> dict:
+    """True if the line moved >= threshold points within the last window_hours.
+
+    Returns the signed movement too (not just a boolean) so callers can tell
+    which DIRECTION it moved — needed to check whether the move agrees with
+    the model's pick. `market` selects which column to track: line_history
+    rows carry both spread_home and total in the same row, so a total bet's
+    "steam" must be measured off `total`, not `spread_home` (previously every
+    total projection reused the spread's steam boolean — see build_projections).
+    """
+    col = "spread_home" if market == "spread" else "total"
     now = datetime.now(timezone.utc)
     recent = []
     for row in line_history:
@@ -112,19 +122,68 @@ def detect_steam(line_history: list, window_hours: int = 2, threshold: float = 1
             recent.append(row)
 
     if len(recent) < 2:
+        return {"flag": False, "movement": 0.0}
+    movement = recent[-1][col] - recent[0][col]
+    return {"flag": abs(movement) >= threshold, "movement": movement}
+
+
+def _market_polarity(market: str) -> tuple[str, str]:
+    """(positive_side_label, negative_side_label) for a market."""
+    return ("home", "away") if market == "spread" else ("over", "under")
+
+
+def _moved_toward_positive(line_movement: float, market: str) -> bool:
+    """True if `line_movement` moved the market toward its "positive" side
+    (home for spread, over for total); False if it moved the other way, or if
+    there was no movement at all.
+
+    The two markets have OPPOSITE sign conventions, and conflating them is
+    exactly what previously inverted both conflict_flag and detect_rlm's
+    sharp_side:
+      spread: home_spread is NEGATIVE when home is favored (e.g. -3), so a
+              move TOWARD home makes the number MORE negative.
+      total:  a HIGHER total directly means more scoring expected, so a move
+              TOWARD over makes the number INCREASE.
+    """
+    if line_movement == 0:
         return False
-    movement = recent[-1]["spread_home"] - recent[0]["spread_home"]
-    return abs(movement) >= threshold
+    return line_movement < 0 if market == "spread" else line_movement > 0
 
 
-def detect_rlm(public_bet_pct: float | None, line_movement: float) -> dict:
-    """Reverse Line Movement: public on one side, line moves the other way."""
-    if public_bet_pct is None:
+def _pick_agrees_with_movement(pick_is_positive: bool, line_movement: float, market: str) -> bool:
+    """True if the market moved in the same direction as the model's pick."""
+    if line_movement == 0:
+        return False
+    moved_positive = _moved_toward_positive(line_movement, market)
+    return moved_positive if pick_is_positive else not moved_positive
+
+
+def _pick_conflicts_with_movement(pick_is_positive: bool, line_movement: float, market: str) -> bool:
+    """True if the market moved AGAINST the model's pick (zero movement is
+    neither agreement nor conflict)."""
+    if line_movement == 0:
+        return False
+    return not _pick_agrees_with_movement(pick_is_positive, line_movement, market)
+
+
+def detect_rlm(public_pct: float | None, line_movement: float, market: str = "spread") -> dict:
+    """Reverse Line Movement: the public is heavily on one side, but the line
+    moved the OTHER way — sharp/professional money pushing back against the
+    public tide.
+
+    `public_pct` = % of public bets on the market's "positive" side (home for
+    spread, over for total). `line_movement` = current - opening line value.
+    """
+    if public_pct is None or line_movement == 0:
         return {"flag": False}
-    if public_bet_pct > 55 and line_movement < 0:
-        return {"flag": True, "sharp_side": "away", "public_pct": public_bet_pct}
-    if public_bet_pct < 45 and line_movement > 0:
-        return {"flag": True, "sharp_side": "home", "public_pct": 100 - public_bet_pct}
+
+    pos_label, neg_label = _market_polarity(market)
+    moved_positive = _moved_toward_positive(line_movement, market)
+
+    if public_pct > 55 and not moved_positive:
+        return {"flag": True, "sharp_side": neg_label, "public_pct": public_pct}
+    if public_pct < 45 and moved_positive:
+        return {"flag": True, "sharp_side": pos_label, "public_pct": 100 - public_pct}
     return {"flag": False}
 
 
@@ -470,25 +529,32 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         pub = pub_by_game.get(game_id, {})
         opening = opening_by_game.get(team_pair, {})
 
-        # Line movement since open
+        # --- Spread market signals ---
         open_spread = opening.get("spread_home", row["dk_spread"])
-        line_movement = float(row["dk_spread"]) - float(open_spread)
+        spread_line_movement = float(row["dk_spread"]) - float(open_spread)
 
-        steam = detect_steam(lh)
+        spread_steam = detect_steam(lh, market="spread")
         public_bet_pct = pub.get("bet_pct_home")
-        rlm = detect_rlm(public_bet_pct, line_movement)
+        rlm = detect_rlm(public_bet_pct, spread_line_movement, market="spread")
 
         # --- Spread ---
         # model_spread now predicts home_cover_surplus directly (positive = home covers).
         # No need to combine with dk_spread — the model output IS the edge.
         spread_edge = float(row["model_spread"])
         spread_ev = calculate_ev(abs(spread_edge), SPREAD_CALIBRATOR)
-        spread_side = row["home_team"] if spread_edge > 0 else row["away_team"]
+        spread_pick_home = spread_edge > 0
+        spread_side = row["home_team"] if spread_pick_home else row["away_team"]
+
+        spread_steam_same_side = _pick_agrees_with_movement(
+            spread_pick_home, spread_steam["movement"], "spread")
+        spread_rlm_same_side = rlm["flag"] and (
+            (rlm.get("sharp_side") == "home") == spread_pick_home)
+
         spread_tier = assign_confidence_tier(
-            abs(spread_edge), steam, rlm["flag"],
-            steam_same_side=True, rlm_same_side=True
+            abs(spread_edge), spread_steam["flag"], rlm["flag"],
+            steam_same_side=spread_steam_same_side, rlm_same_side=spread_rlm_same_side
         )
-        conflict = (spread_edge > 0 and line_movement < 0) or (spread_edge < 0 and line_movement > 0)
+        conflict = _pick_conflicts_with_movement(spread_pick_home, spread_line_movement, "spread")
 
         # For display: convert cover_surplus back to projected home margin
         # home_cover_surplus = home_margin + dk_spread
@@ -511,7 +577,7 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             "ev_pct": spread_ev["ev_pct"],
             "win_probability": spread_ev["win_probability"],
             "confidence_tier": spread_tier,
-            "steam_flag": steam,
+            "steam_flag": spread_steam["flag"],
             "rlm_flag": rlm["flag"],
             "rlm_sharp_side": rlm.get("sharp_side"),
             "conflict_flag": bool(conflict),
@@ -526,6 +592,14 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             "away_cpoe": _safe_float(row.get("cpoe_L4_away")),
         })
 
+        # --- Total market signals ---
+        open_total = opening.get("total", row["dk_total"])
+        total_line_movement = float(row["dk_total"]) - float(open_total)
+
+        total_steam = detect_steam(lh, market="total")
+        public_bet_pct_over = pub.get("bet_pct_over")
+        total_rlm = detect_rlm(public_bet_pct_over, total_line_movement, market="total")
+
         # --- Total ---
         # model_total predicts ou_surplus directly (positive = over hits).
         # Apply weather adjustment (negative = suppress total in bad conditions).
@@ -534,8 +608,19 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         ) if not row["is_dome"] else 0.0
         total_edge = float(row["model_total"]) + weather_adj
         total_ev = calculate_ev(abs(total_edge), TOTAL_CALIBRATOR)
-        total_side = "over" if total_edge > 0 else "under"
-        total_tier = assign_confidence_tier(abs(total_edge), steam, False, True, False)
+        total_pick_over = total_edge > 0
+        total_side = "over" if total_pick_over else "under"
+
+        total_steam_same_side = _pick_agrees_with_movement(
+            total_pick_over, total_steam["movement"], "total")
+        total_rlm_same_side = total_rlm["flag"] and (
+            (total_rlm.get("sharp_side") == "over") == total_pick_over)
+
+        total_tier = assign_confidence_tier(
+            abs(total_edge), total_steam["flag"], total_rlm["flag"],
+            steam_same_side=total_steam_same_side, rlm_same_side=total_rlm_same_side
+        )
+        total_conflict = _pick_conflicts_with_movement(total_pick_over, total_line_movement, "total")
 
         # Only include total if edge exceeds the minimum threshold.
         # TOTALS_MIN_EDGE is set high (10) until weather data is in the training set —
@@ -564,10 +649,10 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             "ev_pct": total_ev["ev_pct"],
             "win_probability": total_ev["win_probability"],
             "confidence_tier": total_tier,
-            "steam_flag": steam,
-            "rlm_flag": False,
-            "rlm_sharp_side": None,
-            "conflict_flag": False,
+            "steam_flag": total_steam["flag"],
+            "rlm_flag": total_rlm["flag"],
+            "rlm_sharp_side": total_rlm.get("sharp_side"),
+            "conflict_flag": bool(total_conflict),
             "weather_adj": round(weather_adj, 1),
             "is_dome": bool(row["is_dome"]),
             "qb_override": False,
