@@ -27,7 +27,12 @@ try:
 except Exception:
     print("'models' bucket already exists")
 
-for filename in ["spread_model.joblib", "total_model.joblib"]:
+MODEL_FILES = [
+    "spread_model.joblib", "total_model.joblib",
+    "spread_calibration.joblib", "total_calibration.joblib",
+]
+
+for filename in MODEL_FILES:
     path = MODELS_DIR / filename
     if not path.exists():
         print(f"  WARNING: {filename} not found — run train_models.py first")

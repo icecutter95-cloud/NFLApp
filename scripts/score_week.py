@@ -30,16 +30,28 @@ from config import (
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+# Calibrated edge -> win-probability curves, fit by calibrate_ev.py on real
+# honest out-of-sample outcomes (isotonic regression, monotonic in edge size).
+# Falls back to the old guessed linear formula (EDGE_PER_WIN_PCT_POINT, capped
+# at 85%) only if calibrate_ev.py hasn't been run yet.
+_SPREAD_CALIBRATION_PATH = MODELS_DIR / "spread_calibration.joblib"
+_TOTAL_CALIBRATION_PATH  = MODELS_DIR / "total_calibration.joblib"
+SPREAD_CALIBRATOR = joblib.load(_SPREAD_CALIBRATION_PATH) if _SPREAD_CALIBRATION_PATH.exists() else None
+TOTAL_CALIBRATOR  = joblib.load(_TOTAL_CALIBRATION_PATH)  if _TOTAL_CALIBRATION_PATH.exists()  else None
+
 
 # ---------------------------------------------------------------------------
 # EV / weather / tier helpers
 # ---------------------------------------------------------------------------
 
-def calculate_ev(edge_points: float, _unused: float = 0, vig: int = -110) -> dict:
+def calculate_ev(edge_points: float, calibrator=None, vig: int = -110) -> dict:
     """edge_points: signed edge already computed (model vs spread), passed as abs value."""
     edge_pts = abs(edge_points)
     implied_prob = 110 / (110 + 100)  # 0.5238 at -110
-    win_prob = min(implied_prob + edge_pts * EDGE_PER_WIN_PCT_POINT, 0.85)
+    if calibrator is not None:
+        win_prob = float(calibrator.predict([edge_pts])[0])
+    else:
+        win_prob = min(implied_prob + edge_pts * EDGE_PER_WIN_PCT_POINT, 0.85)
     payout = 100 / 110
     ev_pct = (win_prob * payout) - ((1 - win_prob) * 1.0)
     return {
@@ -397,7 +409,7 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         # model_spread now predicts home_cover_surplus directly (positive = home covers).
         # No need to combine with dk_spread — the model output IS the edge.
         spread_edge = float(row["model_spread"])
-        spread_ev = calculate_ev(abs(spread_edge), 0)
+        spread_ev = calculate_ev(abs(spread_edge), SPREAD_CALIBRATOR)
         spread_side = row["home_team"] if spread_edge > 0 else row["away_team"]
         spread_tier = assign_confidence_tier(
             abs(spread_edge), steam, rlm["flag"],
@@ -448,7 +460,7 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             row["wind_speed_mph"], row["temp_fahrenheit"], row["precipitation_prob"]
         ) if not row["is_dome"] else 0.0
         total_edge = float(row["model_total"]) + weather_adj
-        total_ev = calculate_ev(abs(total_edge))
+        total_ev = calculate_ev(abs(total_edge), TOTAL_CALIBRATOR)
         total_side = "over" if total_edge > 0 else "under"
         total_tier = assign_confidence_tier(abs(total_edge), steam, False, True, False)
 
