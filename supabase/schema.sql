@@ -171,6 +171,11 @@ CREATE TABLE IF NOT EXISTS team_metrics (
     pff_team_grade        REAL,
     pff_qb_grade          REAL,
     elo_rating            REAL,
+    -- Scoring volume (added for totals model)
+    pts_scored_off_l4     REAL,
+    pts_scored_off_l8     REAL,
+    pts_allowed_def_l4    REAL,
+    pts_allowed_def_l8    REAL,
     updated_at            TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (team, season, week)
 );

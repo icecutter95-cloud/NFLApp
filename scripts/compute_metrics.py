@@ -8,6 +8,8 @@ most recent week. Output is one row per (team, season, week) representing metric
 Usage:
     python compute_metrics.py              # all historical seasons
     python compute_metrics.py 2024         # single season
+    python compute_metrics.py --force      # recompute all seasons (ignores cache)
+    python compute_metrics.py 2024 --force # recompute single season
 """
 
 import sys
@@ -162,6 +164,38 @@ def compute_turnovers(pbp: pd.DataFrame) -> pd.DataFrame:
     return merged[["game_id", "team", "season", "week", "turnover_margin"]]
 
 
+def compute_scoring_from_schedule(season: int) -> pd.DataFrame:
+    """
+    Points scored and allowed per team per game, pulled from schedule final scores.
+    These are the most direct predictors of combined scoring (totals) that EPA doesn't capture:
+    a team can have high EPA/play but low scoring volume (e.g., slow pace, missed FGs).
+    """
+    try:
+        sched = nfl.import_schedules([season])
+        needed = ["game_id", "home_team", "away_team", "home_score", "away_score", "season", "week"]
+        sched = sched[[c for c in needed if c in sched.columns]].dropna(subset=["home_score", "away_score"])
+
+        home_rows = sched[["game_id", "home_team", "home_score", "away_score", "season", "week"]].copy()
+        home_rows.rename(columns={"home_team": "team"}, inplace=True)
+        home_rows["points_scored_off"] = home_rows["home_score"].astype(float)
+        home_rows["points_allowed_def"] = home_rows["away_score"].astype(float)
+
+        away_rows = sched[["game_id", "away_team", "away_score", "home_score", "season", "week"]].copy()
+        away_rows.rename(columns={"away_team": "team"}, inplace=True)
+        away_rows["points_scored_off"] = away_rows["away_score"].astype(float)
+        away_rows["points_allowed_def"] = away_rows["home_score"].astype(float)
+
+        result = pd.concat([
+            home_rows[["game_id", "team", "season", "week", "points_scored_off", "points_allowed_def"]],
+            away_rows[["game_id", "team", "season", "week", "points_scored_off", "points_allowed_def"]],
+        ], ignore_index=True)
+        print(f"  Scoring metrics: {len(result)} team-game rows")
+        return result
+    except Exception as e:
+        print(f"  WARNING: Could not compute scoring metrics: {e}")
+        return pd.DataFrame()
+
+
 # ---------------------------------------------------------------------------
 # Rolling window aggregation
 # ---------------------------------------------------------------------------
@@ -175,6 +209,8 @@ METRIC_COLS = [
     "rz_td_pct_off",
     "plays_per_game",
     "turnover_margin",
+    # Scoring volume — critical for totals model
+    "points_scored_off", "points_allowed_def",
 ]
 
 
@@ -237,13 +273,18 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
     rz = compute_redzone(pbp)
     pace = compute_pace(pbp)
     to = compute_turnovers(pbp)
+    scoring = compute_scoring_from_schedule(season)
 
     game_level = (epa
-                  .merge(cpoe, on=["game_id", "team", "season", "week"], how="left")
-                  .merge(td, on=["game_id", "team", "season", "week"], how="left")
-                  .merge(rz, on=["game_id", "team", "season", "week"], how="left")
-                  .merge(pace, on=["game_id", "team", "season", "week"], how="left")
-                  .merge(to, on=["game_id", "team", "season", "week"], how="left"))
+                  .merge(cpoe,    on=["game_id", "team", "season", "week"], how="left")
+                  .merge(td,      on=["game_id", "team", "season", "week"], how="left")
+                  .merge(rz,      on=["game_id", "team", "season", "week"], how="left")
+                  .merge(pace,    on=["game_id", "team", "season", "week"], how="left")
+                  .merge(to,      on=["game_id", "team", "season", "week"], how="left"))
+
+    if not scoring.empty:
+        game_level = game_level.merge(
+            scoring, on=["game_id", "team", "season", "week"], how="left")
 
     print(f"  {len(game_level)} team-game rows. Computing rolling windows...")
     weekly = build_rolling_metrics(game_level, season)
@@ -256,15 +297,21 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def main():
-    seasons = [int(sys.argv[1])] if len(sys.argv) > 1 else ALL_HISTORICAL_SEASONS
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    force = "--force" in sys.argv
+
+    seasons = [int(args[0])] if args else ALL_HISTORICAL_SEASONS
     all_frames = []
 
     for season in seasons:
         out_path = DATA_DIR / f"team_metrics_{season}.parquet"
-        if out_path.exists():
-            print(f"Skipping {season} — already cached at {out_path}")
+        if out_path.exists() and not force:
+            print(f"Skipping {season} — already cached (use --force to recompute)")
             all_frames.append(pd.read_parquet(out_path))
             continue
+        elif out_path.exists() and force:
+            print(f"--force: recomputing {season} (deleting cached file)")
+            out_path.unlink()
 
         df = build_team_metrics_for_season(season)
         df.to_parquet(out_path, index=False)

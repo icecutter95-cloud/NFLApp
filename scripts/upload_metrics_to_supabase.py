@@ -40,6 +40,11 @@ SUPABASE_COL_MAP = {
     "rz_td_pct_off_season":       "rz_td_pct_off",
     "plays_per_game_L4":          "pace_plays_per_game",
     "turnover_margin_L8":         "turnover_luck_adj",
+    # Scoring volume (totals model)
+    "points_scored_off_L4":       "pts_scored_off_l4",
+    "points_scored_off_L8":       "pts_scored_off_l8",
+    "points_allowed_def_L4":      "pts_allowed_def_l4",
+    "points_allowed_def_L8":      "pts_allowed_def_l8",
 }
 
 

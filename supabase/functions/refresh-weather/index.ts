@@ -37,72 +37,89 @@ const STADIUM_COORDS: Record<string, { name: string; lat: number; lon: number }>
 
 const DOME_TEAMS = new Set(["NO", "ATL", "LV", "LAR", "LAC", "MIN", "IND", "HOU"]);
 
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 interface OWMResponse {
   wind?: { speed?: number; deg?: number };
   main?: { temp?: number };
   pop?: number;  // probability of precipitation (0-1)
 }
 
-serve(async () => {
-  const supabase = createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-  );
-  const owmKey = Deno.env.get("WEATHER_API_KEY") ?? Deno.env.get("OPENWEATHER_API_KEY")!;
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  // Get games scheduled this week from line_history (games we're tracking)
-  const { data: recentLines } = await supabase
-    .from("line_history")
-    .select("game_id")
-    .eq("is_opening", true)
-    .order("recorded_at", { ascending: false })
-    .limit(50);
+  try {
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
+    const owmKey = Deno.env.get("WEATHER_API_KEY") ?? Deno.env.get("OPENWEATHER_API_KEY")!;
 
-  // Extract home team abbreviations from game_id (format varies — use a lookup instead)
-  // Here we just fetch weather for all outdoor stadiums and store by team key
-  const rows = [];
+    // Get games scheduled this week from line_history (games we're tracking)
+    const { data: recentLines } = await supabase
+      .from("line_history")
+      .select("game_id")
+      .eq("is_opening", true)
+      .order("recorded_at", { ascending: false })
+      .limit(50);
 
-  for (const [teamAbbr, stadium] of Object.entries(STADIUM_COORDS)) {
-    if (DOME_TEAMS.has(teamAbbr)) continue;
+    // Extract home team abbreviations from game_id (format varies — use a lookup instead)
+    // Here we just fetch weather for all outdoor stadiums and store by team key
+    const rows = [];
 
-    const url = `${OWM_BASE}?lat=${stadium.lat}&lon=${stadium.lon}&units=imperial&appid=${owmKey}`;
-    let weatherData: OWMResponse;
+    for (const [teamAbbr, stadium] of Object.entries(STADIUM_COORDS)) {
+      if (DOME_TEAMS.has(teamAbbr)) continue;
 
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      weatherData = await res.json();
-    } catch {
-      continue;
+      const url = `${OWM_BASE}?lat=${stadium.lat}&lon=${stadium.lon}&units=imperial&appid=${owmKey}`;
+      let weatherData: OWMResponse;
+
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        weatherData = await res.json();
+      } catch {
+        continue;
+      }
+
+      const windDegrees = weatherData.wind?.deg ?? 0;
+      const directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+      const windDir = directions[Math.round(windDegrees / 45) % 8];
+
+      // We store a row keyed by team (the refresh-odds function links game_id → home_team)
+      // The Python scoring script reads weather by game_id; match via team on the frontend
+      rows.push({
+        game_id: `weather_${teamAbbr}`,  // placeholder; Python script joins by home_team
+        stadium: stadium.name,
+        is_dome: false,
+        wind_speed_mph: Math.round((weatherData.wind?.speed ?? 0) * 10) / 10,
+        wind_direction: windDir,
+        temp_fahrenheit: Math.round(weatherData.main?.temp ?? 72),
+        precipitation_prob: weatherData.pop ?? 0,
+      });
     }
 
-    const windDegrees = weatherData.wind?.deg ?? 0;
-    const directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    const windDir = directions[Math.round(windDegrees / 45) % 8];
+    const { error } = await supabase
+      .from("weather")
+      .upsert(rows, { onConflict: "game_id" });
 
-    // We store a row keyed by team (the refresh-odds function links game_id → home_team)
-    // The Python scoring script reads weather by game_id; match via team on the frontend
-    rows.push({
-      game_id: `weather_${teamAbbr}`,  // placeholder; Python script joins by home_team
-      stadium: stadium.name,
-      is_dome: false,
-      wind_speed_mph: Math.round((weatherData.wind?.speed ?? 0) * 10) / 10,
-      wind_direction: windDir,
-      temp_fahrenheit: Math.round(weatherData.main?.temp ?? 72),
-      precipitation_prob: weatherData.pop ?? 0,
+    if (error) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 500,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(
+      JSON.stringify({ success: true, count: rows.length }),
+      { headers: { ...CORS, "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    return new Response(JSON.stringify({ error: (err as Error).message }), {
+      status: 500,
+      headers: { ...CORS, "Content-Type": "application/json" },
     });
   }
-
-  const { error } = await supabase
-    .from("weather")
-    .upsert(rows, { onConflict: "game_id" });
-
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-  }
-
-  return new Response(
-    JSON.stringify({ success: true, count: rows.length }),
-    { headers: { "Content-Type": "application/json" } }
-  );
 });

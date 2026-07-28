@@ -12,6 +12,11 @@ const ESPN_INJURIES_URL =
 
 const KEY_POSITIONS = new Set(["QB", "WR1", "RB", "LT"]);
 
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 interface EspnInjury {
   team?: { abbreviation?: string };
   athlete?: { fullName?: string; position?: { abbreviation?: string } };
@@ -19,71 +24,83 @@ interface EspnInjury {
   type?: { description?: string };
 }
 
-serve(async () => {
-  const supabase = createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-  );
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  const res = await fetch(ESPN_INJURIES_URL, {
-    headers: { "User-Agent": "nfl-betting-model/1.0" },
-  });
-
-  if (!res.ok) {
-    return new Response(
-      JSON.stringify({ error: `ESPN API returned ${res.status}` }),
-      { status: 500 }
+  try {
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
-  }
 
-  const payload = await res.json();
+    const res = await fetch(ESPN_INJURIES_URL, {
+      headers: { "User-Agent": "nfl-betting-model/1.0" },
+    });
 
-  // ESPN injury response structure: payload.injuries (array) or similar
-  const injuries: EspnInjury[] = payload.injuries ?? [];
+    if (!res.ok) {
+      return new Response(
+        JSON.stringify({ error: `ESPN API returned ${res.status}` }),
+        { status: 500, headers: { ...CORS, "Content-Type": "application/json" } }
+      );
+    }
 
-  const rows = [];
-  const now = new Date().toISOString();
+    const payload = await res.json();
 
-  for (const injury of injuries) {
-    const team = injury.team?.abbreviation;
-    const playerName = injury.athlete?.fullName;
-    const position = injury.athlete?.position?.abbreviation;
-    const statusRaw = injury.status ?? "";
+    // ESPN injury response structure: payload.injuries (array) or similar
+    const injuries: EspnInjury[] = payload.injuries ?? [];
 
-    if (!team || !playerName) continue;
+    const rows = [];
+    const now = new Date().toISOString();
 
-    // Normalize status
-    let status = "questionable";
-    if (/out/i.test(statusRaw)) status = "out";
-    else if (/doubtful/i.test(statusRaw)) status = "doubtful";
-    else if (/questionable/i.test(statusRaw)) status = "questionable";
-    else continue;  // skip "probable" and healthy
+    for (const injury of injuries) {
+      const team = injury.team?.abbreviation;
+      const playerName = injury.athlete?.fullName;
+      const position = injury.athlete?.position?.abbreviation;
+      const statusRaw = injury.status ?? "";
 
-    const isQb = position === "QB";
+      if (!team || !playerName) continue;
 
-    rows.push({
-      team,
-      player_name: playerName,
-      position,
-      status,
-      is_qb_override: false,  // user sets this manually via UI toggle
-      qb_downgrade_pts: 0,
-      updated_at: now,
+      // Normalize status
+      let status = "questionable";
+      if (/out/i.test(statusRaw)) status = "out";
+      else if (/doubtful/i.test(statusRaw)) status = "doubtful";
+      else if (/questionable/i.test(statusRaw)) status = "questionable";
+      else continue;  // skip "probable" and healthy
+
+      const isQb = position === "QB";
+
+      rows.push({
+        team,
+        player_name: playerName,
+        position,
+        status,
+        is_qb_override: false,  // user sets this manually via UI toggle
+        qb_downgrade_pts: 0,
+        updated_at: now,
+      });
+    }
+
+    if (rows.length > 0) {
+      // Delete stale entries for this week before inserting fresh data
+      // (simpler than upsert without a unique key on player+team+week)
+      await supabase.from("injury_flags").delete().eq("is_qb_override", false);
+      const { error } = await supabase.from("injury_flags").insert(rows);
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    return new Response(
+      JSON.stringify({ success: true, count: rows.length }),
+      { headers: { ...CORS, "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    return new Response(JSON.stringify({ error: (err as Error).message }), {
+      status: 500,
+      headers: { ...CORS, "Content-Type": "application/json" },
     });
   }
-
-  if (rows.length > 0) {
-    // Delete stale entries for this week before inserting fresh data
-    // (simpler than upsert without a unique key on player+team+week)
-    await supabase.from("injury_flags").delete().eq("is_qb_override", false);
-    const { error } = await supabase.from("injury_flags").insert(rows);
-    if (error) {
-      return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-    }
-  }
-
-  return new Response(
-    JSON.stringify({ success: true, count: rows.length }),
-    { headers: { "Content-Type": "application/json" } }
-  );
 });

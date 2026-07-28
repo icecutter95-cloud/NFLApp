@@ -25,7 +25,7 @@ from config import (
     SUPABASE_URL, SUPABASE_SERVICE_KEY,
     MODELS_DIR, SPREAD_FEATURES, TOTAL_FEATURES,
     HFA_OVERRIDES, HFA_DEFAULT, DOME_TEAMS,
-    EDGE_PER_WIN_PCT_POINT,
+    EDGE_PER_WIN_PCT_POINT, TOTALS_MIN_EDGE,
 )
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -35,14 +35,15 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 # EV / weather / tier helpers
 # ---------------------------------------------------------------------------
 
-def calculate_ev(model_line: float, dk_line: float, vig: int = -110) -> dict:
-    edge_points = abs(model_line - dk_line)
-    implied_prob = 110 / (110 + 100)  # 0.5238
-    win_prob = min(implied_prob + edge_points * EDGE_PER_WIN_PCT_POINT, 0.85)
+def calculate_ev(edge_points: float, _unused: float = 0, vig: int = -110) -> dict:
+    """edge_points: signed edge already computed (model vs spread), passed as abs value."""
+    edge_pts = abs(edge_points)
+    implied_prob = 110 / (110 + 100)  # 0.5238 at -110
+    win_prob = min(implied_prob + edge_pts * EDGE_PER_WIN_PCT_POINT, 0.85)
     payout = 100 / 110
     ev_pct = (win_prob * payout) - ((1 - win_prob) * 1.0)
     return {
-        "edge_points": round(edge_points, 2),
+        "edge_points": round(edge_pts, 2),
         "win_probability": round(win_prob, 4),
         "ev_pct": round(ev_pct, 4),
         "is_positive_ev": ev_pct > 0,
@@ -260,6 +261,11 @@ METRIC_RENAME = {
     "rz_td_pct_off":        "rz_td_pct_off_season",
     "pace_plays_per_game":  "plays_per_game_L4",
     "turnover_luck_adj":    "turnover_margin_L8",
+    # Scoring volume (totals model)
+    "pts_scored_off_l4":    "points_scored_off_L4",
+    "pts_scored_off_l8":    "points_scored_off_L8",
+    "pts_allowed_def_l4":   "points_allowed_def_L4",
+    "pts_allowed_def_l8":   "points_allowed_def_L8",
 }
 
 
@@ -356,14 +362,21 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         rlm = detect_rlm(public_bet_pct, line_movement)
 
         # --- Spread ---
-        spread_edge = float(row["model_spread"]) - float(row["dk_spread"])
-        spread_ev = calculate_ev(row["model_spread"], row["dk_spread"])
+        # model_spread now predicts home_cover_surplus directly (positive = home covers).
+        # No need to combine with dk_spread — the model output IS the edge.
+        spread_edge = float(row["model_spread"])
+        spread_ev = calculate_ev(abs(spread_edge), 0)
         spread_side = row["home_team"] if spread_edge > 0 else row["away_team"]
         spread_tier = assign_confidence_tier(
             abs(spread_edge), steam, rlm["flag"],
             steam_same_side=True, rlm_same_side=True
         )
         conflict = (spread_edge > 0 and line_movement < 0) or (spread_edge < 0 and line_movement > 0)
+
+        # For display: convert cover_surplus back to projected home margin
+        # home_cover_surplus = home_margin + dk_spread
+        # → projected_home_margin = model_spread - dk_spread
+        projected_margin = round(float(row["model_spread"]) - float(row["dk_spread"]), 1)
 
         projections.append({
             "game_id": game_id,
@@ -375,7 +388,7 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             "away_team": row["away_team"],
             "bet_type": "spread",
             "side": spread_side,
-            "model_line": round(float(row["model_spread"]), 1),
+            "model_line": projected_margin,  # projected home margin (more intuitive than surplus)
             "dk_line": float(row["dk_spread"]),
             "edge_points": spread_ev["edge_points"],
             "ev_pct": spread_ev["ev_pct"],
@@ -391,14 +404,26 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         })
 
         # --- Total ---
+        # model_total predicts ou_surplus directly (positive = over hits).
+        # Apply weather adjustment (negative = suppress total in bad conditions).
         weather_adj = weather_total_adjustment(
             row["wind_speed_mph"], row["temp_fahrenheit"], row["precipitation_prob"]
         ) if not row["is_dome"] else 0.0
-        adj_model_total = float(row["model_total"]) + weather_adj
-        total_edge = adj_model_total - float(row["dk_total"])
-        total_ev = calculate_ev(adj_model_total, row["dk_total"])
+        total_edge = float(row["model_total"]) + weather_adj
+        total_ev = calculate_ev(abs(total_edge))
         total_side = "over" if total_edge > 0 else "under"
         total_tier = assign_confidence_tier(abs(total_edge), steam, False, True, False)
+
+        # Only include total if edge exceeds the minimum threshold.
+        # TOTALS_MIN_EDGE is set high (10) until weather data is in the training set —
+        # model validation corr = -0.028 means no predictive power on totals right now.
+        if abs(total_edge) < TOTALS_MIN_EDGE:
+            continue  # skip this total bet, move to next game
+
+        # For display: convert ou_surplus back to projected combined score
+        # ou_surplus = combined_score - dk_total
+        # → projected_combined_score = model_total + dk_total
+        projected_total = round(float(row["model_total"]) + weather_adj + float(row["dk_total"]), 1)
 
         projections.append({
             "game_id": game_id,
@@ -410,7 +435,7 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
             "away_team": row["away_team"],
             "bet_type": "total",
             "side": total_side,
-            "model_line": round(adj_model_total, 1),
+            "model_line": projected_total,  # projected combined score
             "dk_line": float(row["dk_total"]),
             "edge_points": total_ev["edge_points"],
             "ev_pct": total_ev["ev_pct"],

@@ -9,6 +9,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const SPORT = "americanfootball_nfl";
 
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 interface OddsApiGame {
   id: string;
   home_team: string;
@@ -57,47 +62,62 @@ function parseOddsResponse(data: OddsApiGame[]): Array<{
   return rows;
 }
 
-serve(async () => {
-  const supabase = createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-  );
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  const apiKey = Deno.env.get("ODDS_API_KEY")!;
-  const url =
-    `${ODDS_API_BASE}/sports/${SPORT}/odds` +
-    `?regions=us&markets=spreads,totals&bookmakers=draftkings,fanduel&apiKey=${apiKey}`;
+  try {
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    const body = await res.text();
-    return new Response(JSON.stringify({ error: body }), { status: 500 });
+    const apiKey = Deno.env.get("ODDS_API_KEY")!;
+    const url =
+      `${ODDS_API_BASE}/sports/${SPORT}/odds` +
+      `?regions=us&markets=spreads,totals&bookmakers=draftkings,fanduel&apiKey=${apiKey}`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      const body = await res.text();
+      return new Response(JSON.stringify({ error: body }), {
+        status: 500,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    const data: OddsApiGame[] = await res.json();
+    const rows = parseOddsResponse(data);
+
+    // Check which game_ids already have rows this week (to set is_opening)
+    const gameIds = rows.map((r) => r.game_id);
+    const { data: existing } = await supabase
+      .from("line_history")
+      .select("game_id")
+      .in("game_id", gameIds);
+
+    const seenGameIds = new Set((existing ?? []).map((r: { game_id: string }) => r.game_id));
+
+    const insertRows = rows.map((r) => ({
+      ...r,
+      is_opening: !seenGameIds.has(r.game_id),
+    }));
+
+    const { error } = await supabase.from("line_history").insert(insertRows);
+    if (error) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 500,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(
+      JSON.stringify({ success: true, count: insertRows.length }),
+      { headers: { ...CORS, "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    return new Response(JSON.stringify({ error: (err as Error).message }), {
+      status: 500,
+      headers: { ...CORS, "Content-Type": "application/json" },
+    });
   }
-
-  const data: OddsApiGame[] = await res.json();
-  const rows = parseOddsResponse(data);
-
-  // Check which game_ids already have rows this week (to set is_opening)
-  const gameIds = rows.map((r) => r.game_id);
-  const { data: existing } = await supabase
-    .from("line_history")
-    .select("game_id")
-    .in("game_id", gameIds);
-
-  const seenGameIds = new Set((existing ?? []).map((r: { game_id: string }) => r.game_id));
-
-  const insertRows = rows.map((r) => ({
-    ...r,
-    is_opening: !seenGameIds.has(r.game_id),
-  }));
-
-  const { error } = await supabase.from("line_history").insert(insertRows);
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-  }
-
-  return new Response(
-    JSON.stringify({ success: true, count: insertRows.length }),
-    { headers: { "Content-Type": "application/json" } }
-  );
 });

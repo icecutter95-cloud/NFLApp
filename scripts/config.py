@@ -26,9 +26,9 @@ OPENWEATHER_API_KEY = os.getenv("WEATHER_API_KEY") or os.getenv("OPENWEATHER_API
 # ---------------------------------------------------------------------------
 # Season splits
 # ---------------------------------------------------------------------------
-TRAIN_SEASONS = list(range(2018, 2023))       # 2018–2022 (5 seasons)
-VALIDATE_SEASONS = [2023, 2024]               # out-of-sample evaluation
-TEST_SEASON = 2025                             # 2025 is now complete — holdout
+TRAIN_SEASONS = list(range(2018, 2026))       # 2018–2025 (all 8 confirmed seasons)
+VALIDATE_SEASONS = [2023, 2024]               # kept for reference / re-evaluation
+TEST_SEASON = 2025                             # confirmed — now part of training
 ALL_HISTORICAL_SEASONS = list(range(2018, 2026))  # 2018–2025 (includes completed 2025 season)
 CURRENT_SEASON = 2026                          # upcoming season for live projections
 
@@ -43,14 +43,17 @@ HFA_OVERRIDES = {
     "BUF": 3.0,
     "SF": 2.8,
     "LV": 1.8,
-    "LAR": 1.5,
+    "LA": 1.5,   # Rams — nfl_data_py labels this team "LA", not "LAR"
     "LAC": 1.5,
 }
 
 # ---------------------------------------------------------------------------
 # Stadium classification
 # ---------------------------------------------------------------------------
-DOME_TEAMS = {"NO", "ATL", "LV", "LAR", "LAC", "MIN", "IND", "HOU"}
+DOME_TEAMS = {"NO", "ATL", "LV", "LA", "LAC", "MIN", "IND", "HOU", "ARI", "DET", "DAL"}
+# NOTE: Rams are "LA" in nfl_data_py's schedule data, not "LAR" — LA and LAC both moved
+# into SoFi Stadium (a dome) in 2020; before that they were outdoor (see build_dataset.py
+# and fetch_historical_weather.py for the season-gated dome overrides for these two teams).
 OUTDOOR_COLD_TEAMS = {"GB", "CHI", "BUF", "PIT", "CLE", "NYG", "NYJ", "NE", "KC", "DEN"}
 
 # ---------------------------------------------------------------------------
@@ -67,6 +70,9 @@ _TEAM_METRIC_COLS = [
     "rz_td_pct_off_season",
     "plays_per_game_L4",
     "turnover_margin_L8",
+    # Scoring volume — key for totals model
+    "points_scored_off_L4", "points_scored_off_L8",
+    "points_allowed_def_L4", "points_allowed_def_L8",
 ]
 
 SPREAD_FEATURES = (
@@ -81,8 +87,12 @@ SPREAD_FEATURES = (
         "had_bye_home",
         "had_bye_away",
         "week_number",
-        # Market line — the closing spread is a strong prior; model learns to adjust off it
-        "market_spread_home",
+        # NOTE: market_spread_home intentionally excluded.
+        # Including the closing line as a feature creates a circular dependency:
+        # edge = model_pred + closing_line, but model was trained ON the closing line,
+        # so model_pred ≈ -closing_line + noise → edge ≈ noise (not genuine alpha).
+        # Without market lines, model predicts from team efficiency only and the edge
+        # vs. the closing line is a pure, interpretable measure of market disagreement.
     ]
 )
 
@@ -91,7 +101,7 @@ TOTAL_FEATURES = SPREAD_FEATURES + [
     "temp_fahrenheit",
     "precipitation_prob",
     "is_dome",
-    "market_total",
+    # market_total also excluded for the same reason as market_spread_home above.
 ]
 
 # ---------------------------------------------------------------------------
@@ -100,3 +110,9 @@ TOTAL_FEATURES = SPREAD_FEATURES + [
 EV_DISPLAY_THRESHOLD = 0.0    # show bets with EV% > 0%
 EV_ACTION_THRESHOLD = 0.03    # recommend bets with EV% > 3%
 EDGE_PER_WIN_PCT_POINT = 0.03  # each point of edge ≈ 3% win prob shift (tune in backtesting)
+
+# Totals model minimum edge for live recommendations.
+# Set high (10) to effectively disable totals until weather features are in training data.
+# Validation corr = -0.028 → model has no predictive power on totals.
+# Weather data is the primary missing ingredient; revisit once it's in the training set.
+TOTALS_MIN_EDGE = 10.0

@@ -56,14 +56,14 @@ def load_split(seasons: list, feature_cols: list, target_col: str) -> tuple[pd.D
 # ---------------------------------------------------------------------------
 
 XGBOOST_PARAMS = {
-    "n_estimators": 500,
-    "learning_rate": 0.05,
-    "max_depth": 4,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "min_child_weight": 5,
-    "reg_alpha": 0.1,
-    "reg_lambda": 1.0,
+    "n_estimators": 300,
+    "learning_rate": 0.03,       # slower learning → less overfitting
+    "max_depth": 3,              # shallower trees → simpler model
+    "subsample": 0.6,            # more aggressive row sampling
+    "colsample_bytree": 0.6,     # more aggressive column sampling
+    "min_child_weight": 10,      # require more samples per leaf
+    "reg_alpha": 1.0,            # stronger L1 regularization
+    "reg_lambda": 5.0,           # stronger L2 regularization
     "random_state": 42,
     "n_jobs": -1,
 }
@@ -90,34 +90,43 @@ def train_model(X_train: pd.DataFrame, y_train: pd.Series,
 # Validation / evaluation
 # ---------------------------------------------------------------------------
 
-def ats_roi(preds: np.ndarray, actuals: np.ndarray, closing_lines: np.ndarray,
-            edge_threshold: float = 1.5, vig: float = -110) -> dict:
+def ats_roi(preds: np.ndarray, actuals: np.ndarray,
+            edge_threshold: float = 1.5) -> dict:
     """
-    Simulate ATS betting: bet when |model_line - dk_line| >= edge_threshold.
-    Returns W-L record and ROI%.
+    Simulate ATS / O-U betting using COVER SURPLUS predictions.
+
+    Both preds and actuals are already expressed as cover surplus:
+      - Spread model: home_cover_surplus = home_margin + closing_spread_home
+          positive → home covered; negative → away covered
+      - Total model:  ou_surplus = combined_score - closing_total
+          positive → over hit; negative → under hit
+
+    We bet when |pred| >= edge_threshold (model is confident enough).
+    We win when sign(pred) == sign(actual).
+
+    This eliminates any edge-formula sign ambiguity: the model directly
+    predicts the ATS outcome, so the win condition is simply:
+        pred > 0 AND actual > 0  →  win (both say home/over)
+        pred < 0 AND actual < 0  →  win (both say away/under)
     """
     payout = 100 / 110  # -110 vig
-
     wins, losses, pushes = 0, 0, 0
     profit = 0.0
 
-    for pred, actual, line in zip(preds, actuals, closing_lines):
-        if np.isnan(line) or np.isnan(actual):
+    for pred, actual in zip(preds, actuals):
+        if np.isnan(actual) or np.isnan(pred):
             continue
-        edge = pred - line
-        if abs(edge) < edge_threshold:
+        if abs(pred) < edge_threshold:
             continue
 
-        # Which side does the model like?
-        bet_home = edge > 0
-        # Did home team cover?
-        home_covered = actual > line  # actual = home_margin
+        push_flag = abs(actual) < 0.01
+        won = (pred > 0 and actual > 0) or (pred < 0 and actual < 0)
 
-        if bet_home == home_covered:
+        if push_flag:
+            pushes += 1
+        elif won:
             wins += 1
             profit += payout
-        elif actual == line:
-            pushes += 1
         else:
             losses += 1
             profit -= 1.0
@@ -140,20 +149,13 @@ def evaluate_model(model: XGBRegressor, X: pd.DataFrame, y: pd.Series,
     print(f"  RMSE: {rmse:.3f} pts")
     print(f"  Corr: {corr:.3f}")
 
-    if target == "home_margin" and "closing_spread_home" in df_raw.columns:
-        lines = df_raw["closing_spread_home"].values
-        print("  ATS ROI by edge threshold:")
-        for thresh in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]:
-            r = ats_roi(preds, y.values, lines, edge_threshold=thresh)
-            print(f"    edge ≥ {thresh:.1f}: {r['wins']}-{r['losses']} | ROI: {r['roi_pct']:+.1f}% | "
-                  f"{r['bets']} bets")
-
-    if target == "combined_score" and "closing_total" in df_raw.columns:
-        lines = df_raw["closing_total"].values
-        print("  AOU (totals) ROI by edge threshold:")
-        for thresh in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]:
-            r = ats_roi(preds, y.values, lines, edge_threshold=thresh)
-            print(f"    edge ≥ {thresh:.1f}: {r['wins']}-{r['losses']} | ROI: {r['roi_pct']:+.1f}%")
+    # ATS / O-U ROI — preds and y are already cover surplus
+    bet_label = "ATS ROI" if target == "home_cover_surplus" else "AOU ROI"
+    print(f"  {bet_label} by |pred| threshold:")
+    for thresh in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]:
+        r = ats_roi(preds, y.values, edge_threshold=thresh)
+        print(f"    edge ≥ {thresh:.1f}: {r['wins']}-{r['losses']} | "
+              f"ROI: {r['roi_pct']:+.1f}% | {r['bets']} bets")
 
     # Feature importance (top 10)
     feat_names = X.columns.tolist()
@@ -177,49 +179,53 @@ def main():
 
     # --- Spread model ---
     print("=" * 60)
-    print("SPREAD MODEL (predicts: home_margin)")
+    print("SPREAD MODEL (predicts: home_cover_surplus)")
+    print("  home_cover_surplus = home_margin + closing_spread_home")
+    print("  positive → home covers; negative → away covers")
     print("=" * 60)
-    X_train_s, y_train_s, df_train_s = load_split(TRAIN_SEASONS, SPREAD_FEATURES, "home_margin")
+    X_train_s, y_train_s, df_train_s = load_split(TRAIN_SEASONS, SPREAD_FEATURES, "home_cover_surplus")
     spread_model = train_model(X_train_s, y_train_s, df_train_s, "spread_model")
 
     spread_path = MODELS_DIR / "spread_model.joblib"
     joblib.dump(spread_model, spread_path)
     print(f"Saved → {spread_path}")
 
-    evaluate_model(spread_model, X_train_s, y_train_s, df_train_s, "home_margin", "Training set")
+    evaluate_model(spread_model, X_train_s, y_train_s, df_train_s, "home_cover_surplus", "Training set")
 
     if args.validate:
-        X_val_s, y_val_s, df_val_s = load_split(VALIDATE_SEASONS, SPREAD_FEATURES, "home_margin")
-        evaluate_model(spread_model, X_val_s, y_val_s, df_val_s, "home_margin",
+        X_val_s, y_val_s, df_val_s = load_split(VALIDATE_SEASONS, SPREAD_FEATURES, "home_cover_surplus")
+        evaluate_model(spread_model, X_val_s, y_val_s, df_val_s, "home_cover_surplus",
                        f"Validation ({VALIDATE_SEASONS})")
 
     if args.test:
-        print("\n⚠  RUNNING 2024 HOLDOUT — seal broken")
-        X_test_s, y_test_s, df_test_s = load_split([TEST_SEASON], SPREAD_FEATURES, "home_margin")
-        evaluate_model(spread_model, X_test_s, y_test_s, df_test_s, "home_margin",
+        print("\n⚠  RUNNING HOLDOUT — seal broken")
+        X_test_s, y_test_s, df_test_s = load_split([TEST_SEASON], SPREAD_FEATURES, "home_cover_surplus")
+        evaluate_model(spread_model, X_test_s, y_test_s, df_test_s, "home_cover_surplus",
                        f"TEST HOLDOUT ({TEST_SEASON})")
 
     # --- Total model ---
     print("\n" + "=" * 60)
-    print("TOTAL MODEL (predicts: combined_score)")
+    print("TOTAL MODEL (predicts: ou_surplus)")
+    print("  ou_surplus = combined_score - closing_total")
+    print("  positive → over hits; negative → under hits")
     print("=" * 60)
-    X_train_t, y_train_t, df_train_t = load_split(TRAIN_SEASONS, TOTAL_FEATURES, "combined_score")
+    X_train_t, y_train_t, df_train_t = load_split(TRAIN_SEASONS, TOTAL_FEATURES, "ou_surplus")
     total_model = train_model(X_train_t, y_train_t, df_train_t, "total_model")
 
     total_path = MODELS_DIR / "total_model.joblib"
     joblib.dump(total_model, total_path)
     print(f"Saved → {total_path}")
 
-    evaluate_model(total_model, X_train_t, y_train_t, df_train_t, "combined_score", "Training set")
+    evaluate_model(total_model, X_train_t, y_train_t, df_train_t, "ou_surplus", "Training set")
 
     if args.validate:
-        X_val_t, y_val_t, df_val_t = load_split(VALIDATE_SEASONS, TOTAL_FEATURES, "combined_score")
-        evaluate_model(total_model, X_val_t, y_val_t, df_val_t, "combined_score",
+        X_val_t, y_val_t, df_val_t = load_split(VALIDATE_SEASONS, TOTAL_FEATURES, "ou_surplus")
+        evaluate_model(total_model, X_val_t, y_val_t, df_val_t, "ou_surplus",
                        f"Validation ({VALIDATE_SEASONS})")
 
     if args.test:
-        X_test_t, y_test_t, df_test_t = load_split([TEST_SEASON], TOTAL_FEATURES, "combined_score")
-        evaluate_model(total_model, X_test_t, y_test_t, df_test_t, "combined_score",
+        X_test_t, y_test_t, df_test_t = load_split([TEST_SEASON], TOTAL_FEATURES, "ou_surplus")
+        evaluate_model(total_model, X_test_t, y_test_t, df_test_t, "ou_surplus",
                        f"TEST HOLDOUT ({TEST_SEASON})")
 
     print("\nDone. Run with --validate to see full validation metrics.")

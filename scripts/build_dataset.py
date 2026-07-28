@@ -135,6 +135,74 @@ def add_closing_lines(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Weather features
+# ---------------------------------------------------------------------------
+
+def add_weather(df: pd.DataFrame) -> pd.DataFrame:
+    """Merge historical weather into the game dataframe.
+
+    1. Try to load data/historical_weather.parquet and join on game_id.
+       Only the weather measurement columns are merged — is_dome is already
+       set by add_game_context() and is not duplicated here.
+    2. For dome games (home team in DOME_TEAMS), overwrite weather with dome
+       defaults (72 °F, 0 wind, 0 precip) regardless of API data.
+    3. Fill remaining NaN (outdoor games without weather data) with
+       conservative outdoor defaults so features are never NaN.
+
+    Historical note: LA (Rams; nfl_data_py uses "LA" not "LAR") and LAC both
+    played outdoor 2018-2019 (LA Coliseum / StubHub Center), then moved into
+    SoFi Stadium (dome) in 2020. Apply dome defaults only from 2020 onward
+    for these two teams.
+    """
+    from config import DOME_TEAMS
+
+    all_dome = DOME_TEAMS  # config now includes full dome set
+
+    # Teams that became domes mid-period: dome defaults apply only from season X onward
+    _DOME_FROM_SEASON = {"LA": 2020, "LAC": 2020}
+
+    weather_path = DATA_DIR / "historical_weather.parquet"
+    if weather_path.exists():
+        wx = pd.read_parquet(weather_path)[
+            # Exclude is_dome — it's already in df from add_game_context
+            ["game_id", "temp_fahrenheit", "wind_speed_mph", "precipitation_prob"]
+        ]
+        df = df.merge(wx, on="game_id", how="left")
+        n_with_data = wx["temp_fahrenheit"].notna().sum()
+        print(f"  Merged weather: {n_with_data}/{len(wx)} games have data")
+    else:
+        print("  WARNING: historical_weather.parquet not found — run fetch_historical_weather.py first")
+        print("           Weather features will be NaN (totals model will be unreliable)")
+        for col in ["temp_fahrenheit", "wind_speed_mph", "precipitation_prob"]:
+            df[col] = np.nan
+
+    # Ensure is_dome is set for the full dome set (config may be narrower than reality)
+    dome_mask = df["home_team"].isin(all_dome)
+    # Exclude teams that weren't dome yet in early seasons
+    for team, from_season in _DOME_FROM_SEASON.items():
+        dome_mask = dome_mask & ~((df["home_team"] == team) & (df["season"] < from_season))
+    df.loc[dome_mask, "is_dome"] = 1
+
+    df["is_dome"] = df["is_dome"].fillna(0).astype(int)
+
+    # Dome teams always get controlled-environment defaults
+    dome_mask = df["is_dome"] == 1
+    df.loc[dome_mask, "temp_fahrenheit"]    = 72.0
+    df.loc[dome_mask, "wind_speed_mph"]     = 0.0
+    df.loc[dome_mask, "precipitation_prob"] = 0.0
+
+    # For outdoor games still missing weather, fill with reasonable outdoor defaults
+    outdoor_mask = df["is_dome"] == 0
+    df.loc[outdoor_mask & df["temp_fahrenheit"].isna(),    "temp_fahrenheit"]    = 55.0
+    df.loc[outdoor_mask & df["wind_speed_mph"].isna(),     "wind_speed_mph"]     = 8.0
+    df.loc[outdoor_mask & df["precipitation_prob"].isna(), "precipitation_prob"] = 0.1
+
+    wx_coverage = df["temp_fahrenheit"].notna().sum()
+    print(f"  Weather coverage after fill: {wx_coverage}/{len(df)} ({wx_coverage/len(df)*100:.1f}%)")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Target variables
 # ---------------------------------------------------------------------------
 
@@ -142,14 +210,22 @@ def add_targets(df: pd.DataFrame) -> pd.DataFrame:
     df["home_margin"] = df["home_score"] - df["away_score"]
     df["combined_score"] = df["home_score"] + df["away_score"]
 
-    # ATS / O/U result labels (for validation reporting)
+    # Model targets (what we train on):
+    #   home_cover_surplus > 0 → home covered the spread
+    #   home_cover_surplus < 0 → away covered the spread
+    #   ou_surplus > 0 → over hit
+    #   ou_surplus < 0 → under hit
+    df["home_cover_surplus"] = df["home_margin"] + df["closing_spread_home"]
+    df["ou_surplus"] = df["combined_score"] - df["closing_total"]
+
+    # Human-readable labels (for reference)
     df["spread_result"] = np.where(
-        df["home_margin"] > df["closing_spread_home"].abs(), "home_covered",
-        np.where(df["home_margin"] < -df["closing_spread_home"].abs(), "away_covered", "push")
+        df["home_cover_surplus"] > 0.01, "home_covered",
+        np.where(df["home_cover_surplus"] < -0.01, "away_covered", "push")
     )
     df["total_result"] = np.where(
-        df["combined_score"] > df["closing_total"], "over",
-        np.where(df["combined_score"] < df["closing_total"], "under", "push")
+        df["ou_surplus"] > 0.01, "over",
+        np.where(df["ou_surplus"] < -0.01, "under", "push")
     )
     return df
 
@@ -179,16 +255,18 @@ def main():
     print("Adding closing lines...")
     df = add_closing_lines(df)
 
-    # 5. Expose market lines as model features
-    # The closing line is the market's best estimate — giving it to the model
-    # lets it learn to adjust *off* the market rather than predict from scratch.
+    # 5. Keep market lines as reference columns (NOT in features — see config.py)
     df["market_spread_home"] = df["closing_spread_home"]
     df["market_total"]       = df["closing_total"]
+
+    # 5b. Weather features
+    print("Adding weather features...")
+    df = add_weather(df)
 
     # 6. Targets
     df = add_targets(df)
 
-    # 6. Drop rows without scores or lines (can't train/evaluate on them)
+    # 7. Drop rows without scores or lines (can't train/evaluate on them)
     before = len(df)
     df = df.dropna(subset=["home_score", "closing_spread_home"])
     print(f"Dropped {before - len(df)} rows with missing scores or lines ({len(df)} remain)")
@@ -200,11 +278,11 @@ def main():
     # 8. Save
     out = DATA_DIR / "historical_dataset.parquet"
     df.to_parquet(out, index=False)
-    print(f"\nFull dataset ({len(df)} games) → {out}")
+    print(f"\nFull dataset ({len(df)} games) -> {out}")
 
     out_reg = DATA_DIR / "historical_dataset_regular.parquet"
     regular.to_parquet(out_reg, index=False)
-    print(f"Regular season ({len(regular)} games) → {out_reg}")
+    print(f"Regular season ({len(regular)} games) -> {out_reg}")
 
     # Quick coverage summary
     print("\nLine coverage by season:")
