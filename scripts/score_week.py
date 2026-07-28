@@ -25,7 +25,7 @@ from config import (
     SUPABASE_URL, SUPABASE_SERVICE_KEY,
     MODELS_DIR, SPREAD_FEATURES, TOTAL_FEATURES,
     HFA_OVERRIDES, HFA_DEFAULT, DOME_TEAMS,
-    EDGE_PER_WIN_PCT_POINT, TOTALS_MIN_EDGE,
+    EDGE_PER_WIN_PCT_POINT, TOTALS_MIN_EDGE, METRIC_BLEND_PSEUDO_COUNT,
 )
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -132,44 +132,117 @@ def detect_rlm(public_bet_pct: float | None, line_movement: float) -> dict:
 # Data fetching from Supabase
 # ---------------------------------------------------------------------------
 
-def fetch_team_metrics(season: int, week: int) -> pd.DataFrame:
-    """Pull team_metrics for (season, week-1) — metrics going INTO this week.
+_NON_METRIC_COLS = {"id", "team", "season", "week", "updated_at"}
 
-    Fallback chain when no data exists for the requested season/week:
-      1. Any earlier week in the same season (most recent)
-      2. End of the previous season (pre-season / week 1 of new season)
+
+def _fetch_in_season_metrics(season: int, week: int) -> pd.DataFrame:
+    """Metrics going INTO `week` of `season`.
+
+    NOTE the join key: compute_metrics.py builds the week-W row from games
+    strictly BEFORE week W, and build_dataset.py merges training data on `week`
+    directly. So a week-W game must use the week-W row. This previously queried
+    `week - 1`, serving the model metrics one week staler than it trained on.
     """
-    # Primary: exact week
     resp = (supabase.table("team_metrics")
             .select("*")
             .eq("season", season)
-            .eq("week", week - 1)
+            .eq("week", week)
             .execute())
     if resp.data:
         return pd.DataFrame(resp.data)
 
-    # Fallback 1: most recent week available in this season
+    # Fall back to the most recent earlier week available this season
     resp = (supabase.table("team_metrics")
             .select("*")
             .eq("season", season)
+            .lt("week", week)
             .order("week", desc=True)
             .limit(32)
             .execute())
     if resp.data:
-        print(f"  Metrics fallback: using latest available week in {season} season")
-        return pd.DataFrame(resp.data)
+        df = pd.DataFrame(resp.data)
+        print(f"  Metrics: exact week {week} unavailable, using week {int(df['week'].max())}")
+        return df
 
-    # Fallback 2: end of previous season (handles pre-season / new-season week 1)
+    return pd.DataFrame()
+
+
+def _fetch_prior_season_end_metrics(season: int) -> pd.DataFrame:
+    """Each team's metrics as of the final week of the previous season."""
     prev = season - 1
     resp = (supabase.table("team_metrics")
             .select("*")
             .eq("season", prev)
-            .order("week", desc=True)
-            .limit(32)
             .execute())
-    if resp.data:
-        print(f"  Metrics fallback: no {season} data found, using end of {prev} season")
-        return pd.DataFrame(resp.data)
+    if not resp.data:
+        return pd.DataFrame()
+    df = pd.DataFrame(resp.data)
+    idx = df.groupby("team")["week"].idxmax()
+    return df.loc[idx].reset_index(drop=True)
+
+
+def _blend_metrics(in_season: pd.DataFrame, prior: pd.DataFrame,
+                   n: float, k: float) -> pd.DataFrame:
+    """blended = (n * in_season + k * prior) / (n + k), per team per metric."""
+    metric_cols = [c for c in in_season.columns
+                   if c not in _NON_METRIC_COLS
+                   and pd.api.types.is_numeric_dtype(in_season[c])]
+
+    prior_idx = prior.set_index("team")
+    out = in_season.copy()
+
+    for i in out.index:
+        team = out.at[i, "team"]
+        if team not in prior_idx.index:
+            continue
+        for c in metric_cols:
+            if c not in prior_idx.columns:
+                continue
+            cur, pri = out.at[i, c], prior_idx.at[team, c]
+            if pd.isna(pri):
+                continue
+            if pd.isna(cur):
+                out.at[i, c] = pri
+            else:
+                out.at[i, c] = (n * float(cur) + k * float(pri)) / (n + k)
+    return out
+
+
+def fetch_team_metrics(season: int, week: int) -> pd.DataFrame:
+    """Team metrics going into `week`, blended with end-of-prior-season form.
+
+    Early in a season the current-season rolling window is built from only a
+    handful of games and is noisier than simply using last season (measured:
+    weeks 2-4 went 63.6% -> 69.5% win rate when substituting prior-season-end
+    wholesale). So we blend the two, weighting the prior by a fitted
+    pseudo-count and letting it fade as real games accumulate:
+
+        blended = (n * in_season + k * prior) / (n + k)
+
+    with n = games played this season. Week 1 has no in-season data at all
+    (n=0), so it resolves to pure prior — which is what the old fallback chain
+    did, and which diagnose_preseason.py showed lifts week-1 correlation from
+    +0.03 (all-zero features) to +0.47.
+    """
+    k = METRIC_BLEND_PSEUDO_COUNT
+    in_season = _fetch_in_season_metrics(season, week)
+    prior = _fetch_prior_season_end_metrics(season)
+
+    if not in_season.empty and not prior.empty:
+        # week-W row is built from W-1 games, so that's our in-season sample size
+        n = float(max(int(in_season["week"].max()) - 1, 0))
+        weight = k / (n + k) * 100
+        print(f"  Metrics: blending {season} wk{int(in_season['week'].max())} "
+              f"with end of {season - 1} (n={n:.0f}, k={k:g} -> {weight:.0f}% prior)")
+        return _blend_metrics(in_season, prior, n, k)
+
+    if not in_season.empty:
+        print(f"  Metrics: no {season - 1} data to blend with — using {season} in-season only")
+        return in_season
+
+    if not prior.empty:
+        print(f"  Metrics: no {season} data yet — using end of {season - 1} (pure prior)")
+        return prior
 
     print("  WARNING: No team metrics found — model inputs will be zeroed out")
     return pd.DataFrame()

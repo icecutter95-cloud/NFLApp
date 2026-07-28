@@ -111,6 +111,18 @@ EV_DISPLAY_THRESHOLD = 0.0    # show bets with EV% > 0%
 EV_ACTION_THRESHOLD = 0.03    # recommend bets with EV% > 3%
 EDGE_PER_WIN_PCT_POINT = 0.03  # each point of edge ≈ 3% win prob shift (tune in backtesting)
 
+# Empirical-Bayes pseudo-count for blending current-season rolling team metrics
+# with end-of-prior-season metrics:
+#     blended = (n * in_season + k * prior) / (n + k),   n = games played this season
+# Week 1 (n=0) is therefore pure prior; the prior fades as real games accumulate.
+#
+# FITTED, not guessed — see calibrate_metric_blend.py. Swept k over 0..24 plus
+# prior-only; nested validation selected k=3 using 2023-2024 alone, then confirmed
+# on a 2025 holdout never used for selection (weeks 1-4: 67.2% -> 70.0% win rate,
+# +28.4% -> +33.6% ROI; all weeks: 75.1% -> 77.2%, +43.4% -> +47.4%).
+# The optimum is flat across k=2-3, so the exact value is not knife-edge.
+METRIC_BLEND_PSEUDO_COUNT = 3.0
+
 # Totals model minimum edge for live recommendations.
 # Set high (10) to effectively disable totals until weather features are in training data.
 # Validation corr = -0.028 → model has no predictive power on totals.
