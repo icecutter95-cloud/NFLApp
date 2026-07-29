@@ -129,8 +129,32 @@ def add_closing_lines(df: pd.DataFrame) -> pd.DataFrame:
         df["pfr_total"] = np.nan
 
     # Primary source from nfl_data_py schedule, fallback to PFR
-    df["closing_spread_home"] = df["spread_line"].fillna(df["pfr_spread_home"]) if "spread_line" in df.columns else df["pfr_spread_home"]
+    raw_spread = df["spread_line"].fillna(df["pfr_spread_home"]) if "spread_line" in df.columns else df["pfr_spread_home"]
     df["closing_total"] = df["total_line"].fillna(df["pfr_total"]) if "total_line" in df.columns else df["pfr_total"]
+
+    # ---- SIGN NORMALISATION (critical) ----------------------------------
+    # nflverse `spread_line` uses POSITIVE = home favored, which is the
+    # OPPOSITE of the sportsbook standard. The Odds API (our live source,
+    # line_history.spread_home -> score_week.py's dk_spread) uses the
+    # standard convention: NEGATIVE = home favored. Normalise to the
+    # standard here so training data and live scoring agree, and so
+    # add_targets()'s `home_margin + closing_spread_home` is correct.
+    #
+    # Getting this backwards silently corrupts the model TARGET rather than
+    # a feature, which is why it survived the earlier circular-dependency
+    # cleanup: with the wrong sign the target becomes
+    #     wrong = home_margin + spread_line = correct + 2*spread_line
+    # so the model learns mostly to reconstruct the market's own line, and
+    # evaluating sign(pred)==sign(actual) with the same 2*spread_line term
+    # on both sides inflates the apparent win rate.
+    #
+    # Worked example (MIA home vs NE, 2019 wk2, MIA lost 0-43):
+    #   spread_line = -18  ->  NE favored by 18
+    #   correct surplus = -43 - (-18) = -25  (missed the number by 25)
+    #   wrong   surplus = -43 + (-18) = -61  (impossible: they only lost by 43)
+    df["closing_spread_home"] = -raw_spread
+    # Keep the raw source value for provenance / debugging.
+    df["nflverse_spread_line_raw"] = raw_spread
     return df
 
 
@@ -203,6 +227,47 @@ def add_weather(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Sanity guards
+# ---------------------------------------------------------------------------
+
+def assert_line_conventions(df: pd.DataFrame) -> None:
+    """Fail loudly if the spread sign convention is inverted.
+
+    A correctly-signed home spread (negative = home favored) must correlate
+    NEGATIVELY with realised home margin: the bigger the home favorite, the
+    more negative the number, the larger the expected margin. And because a
+    closing line is a well-calibrated market price, cover outcomes must land
+    near 50/50.
+
+    Both checks failed before the sign fix (corr was +0.451, covers 56/42),
+    and the bad sign corrupted the TARGET rather than a feature -- invisible
+    to feature-level review. Guard it here so it can never regress silently.
+    """
+    d = df.dropna(subset=["closing_spread_home", "home_margin"])
+    if len(d) < 100:
+        return
+
+    corr = d["closing_spread_home"].corr(d["home_margin"])
+    if corr > -0.2:
+        raise AssertionError(
+            f"closing_spread_home vs home_margin corr = {corr:+.3f}; expected strongly "
+            f"NEGATIVE. The spread sign convention looks inverted -- see the sign "
+            f"normalisation note in add_closing_lines()."
+        )
+
+    surplus = d["home_margin"] + d["closing_spread_home"]
+    home_cover_pct = (surplus > 0.01).mean() * 100
+    if not (44.0 <= home_cover_pct <= 56.0):
+        raise AssertionError(
+            f"home cover rate = {home_cover_pct:.1f}%; expected ~50% against a "
+            f"calibrated closing line. Check the spread sign / line source."
+        )
+
+    print(f"  Line sanity OK: corr(spread, margin)={corr:+.3f}, "
+          f"home covers {home_cover_pct:.1f}%, mean surplus {surplus.mean():+.2f}")
+
+
+# ---------------------------------------------------------------------------
 # Target variables
 # ---------------------------------------------------------------------------
 
@@ -265,6 +330,10 @@ def main():
 
     # 6. Targets
     df = add_targets(df)
+
+    # Runs after add_targets because it needs home_margin.
+    print("Checking line sign conventions...")
+    assert_line_conventions(df)
 
     # 7. Drop rows without scores or lines (can't train/evaluate on them)
     before = len(df)

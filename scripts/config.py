@@ -116,15 +116,38 @@ EDGE_PER_WIN_PCT_POINT = 0.03  # each point of edge ≈ 3% win prob shift (tune 
 #     blended = (n * in_season + k * prior) / (n + k),   n = games played this season
 # Week 1 (n=0) is therefore pure prior; the prior fades as real games accumulate.
 #
-# FITTED, not guessed — see calibrate_metric_blend.py. Swept k over 0..24 plus
-# prior-only; nested validation selected k=3 using 2023-2024 alone, then confirmed
-# on a 2025 holdout never used for selection (weeks 1-4: 67.2% -> 70.0% win rate,
-# +28.4% -> +33.6% ROI; all weeks: 75.1% -> 77.2%, +43.4% -> +47.4%).
-# The optimum is flat across k=2-3, so the exact value is not knife-edge.
+# NOT CURRENTLY VALIDATED. k=3 was originally fitted via calibrate_metric_blend.py,
+# but that fit ran against the spread-sign-corrupted target (see the sign
+# normalisation note in build_dataset.add_closing_lines). Re-running the sweep on
+# the corrected target produces pure noise -- no unimodal optimum, correlations
+# ~0.06, ROI ordering essentially random -- so there is no empirical basis for any
+# particular k right now.
+#
+# The blend MECHANISM is still kept because it is structurally sound independent
+# of the fit: compute_metrics.py cannot build a week-1 rolling window (no prior
+# games), so without a prior every week-1 team feature is NaN -> filled to 0.
+# Falling back to last season's form is plainly better than feeding the model
+# all zeros. The specific value below is a reasonable default, not a fitted one.
 METRIC_BLEND_PSEUDO_COUNT = 3.0
 
-# Totals model minimum edge for live recommendations.
-# Set high (10) to effectively disable totals until weather features are in training data.
-# Validation corr = -0.028 → model has no predictive power on totals.
-# Weather data is the primary missing ingredient; revisit once it's in the training set.
-TOTALS_MIN_EDGE = 10.0
+# ---------------------------------------------------------------------------
+# Live recommendation gates
+# ---------------------------------------------------------------------------
+# Both models are currently gated OFF because neither demonstrates an edge on
+# an honest out-of-sample backtest (train 2018-2022, evaluate 2023-2025).
+#
+# SPREAD: 52.5% win rate at edge>=1.5 (261-236) vs a 52.38% break-even at -110,
+# i.e. ROI +0.3% -- statistically indistinguishable from zero. The previously
+# reported 70-75% was entirely an artifact of an inverted spread sign that made
+# the training target `home_margin + spread_line` instead of
+# `home_margin - spread_line`; the corrupted target equalled
+# `correct + 2*spread_line`, so the model largely learned to reconstruct the
+# market's own line (corr(model, closing_line) was +0.741, vs +0.009 after the
+# fix) and was then scored against a target containing the same term on both
+# sides. Raise/lower this gate only on the back of a fresh honest backtest.
+#
+# TOTALS: no signal either -- validation corr ~0, ROI negative across seasons,
+# and unaffected by the sign bug (totals have no home/away polarity). Adding
+# real historical weather did not help, because the market prices weather in.
+SPREAD_MIN_EDGE = 999.0   # effectively disabled; no demonstrated edge
+TOTALS_MIN_EDGE = 999.0   # effectively disabled; no demonstrated edge

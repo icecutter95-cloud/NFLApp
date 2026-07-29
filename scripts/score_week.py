@@ -25,7 +25,7 @@ from config import (
     SUPABASE_URL, SUPABASE_SERVICE_KEY,
     MODELS_DIR, SPREAD_FEATURES, TOTAL_FEATURES,
     HFA_OVERRIDES, HFA_DEFAULT, DOME_TEAMS,
-    EDGE_PER_WIN_PCT_POINT, TOTALS_MIN_EDGE, METRIC_BLEND_PSEUDO_COUNT,
+    EDGE_PER_WIN_PCT_POINT, SPREAD_MIN_EDGE, TOTALS_MIN_EDGE, METRIC_BLEND_PSEUDO_COUNT,
 )
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -561,36 +561,42 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         # → projected_home_margin = model_spread - dk_spread
         projected_margin = round(float(row["model_spread"]) - float(row["dk_spread"]), 1)
 
-        projections.append({
-            "game_id": game_id,
-            "season": int(row["season"]),
-            "week": int(row["week"]),
-            "game_date": row["game_date"],
-            "game_time": row["game_time"],
-            "home_team": row["home_team"],
-            "away_team": row["away_team"],
-            "bet_type": "spread",
-            "side": spread_side,
-            "model_line": projected_margin,  # projected home margin (more intuitive than surplus)
-            "dk_line": float(row["dk_spread"]),
-            "edge_points": spread_ev["edge_points"],
-            "ev_pct": spread_ev["ev_pct"],
-            "win_probability": spread_ev["win_probability"],
-            "confidence_tier": spread_tier,
-            "steam_flag": spread_steam["flag"],
-            "rlm_flag": rlm["flag"],
-            "rlm_sharp_side": rlm.get("sharp_side"),
-            "conflict_flag": bool(conflict),
-            "weather_adj": 0.0,
-            "is_dome": bool(row["is_dome"]),
-            "qb_override": False,
-            "home_epa_off": _safe_float(row.get("epa_per_play_off_L4_home")),
-            "away_epa_off": _safe_float(row.get("epa_per_play_off_L4_away")),
-            "home_epa_def": _safe_float(row.get("epa_per_play_def_L4_home")),
-            "away_epa_def": _safe_float(row.get("epa_per_play_def_L4_away")),
-            "home_cpoe": _safe_float(row.get("cpoe_L4_home")),
-            "away_cpoe": _safe_float(row.get("cpoe_L4_away")),
-        })
+        # Only surface a spread bet if it clears the gate. SPREAD_MIN_EDGE is
+        # currently 999 (effectively off) because the honest backtest shows
+        # 52.5% at edge>=1.5 against a 52.38% break-even — no edge. Gated
+        # independently of the totals block below so either can be re-enabled
+        # on its own.
+        if abs(spread_edge) >= SPREAD_MIN_EDGE:
+            projections.append({
+                "game_id": game_id,
+                "season": int(row["season"]),
+                "week": int(row["week"]),
+                "game_date": row["game_date"],
+                "game_time": row["game_time"],
+                "home_team": row["home_team"],
+                "away_team": row["away_team"],
+                "bet_type": "spread",
+                "side": spread_side,
+                "model_line": projected_margin,  # projected home margin (more intuitive than surplus)
+                "dk_line": float(row["dk_spread"]),
+                "edge_points": spread_ev["edge_points"],
+                "ev_pct": spread_ev["ev_pct"],
+                "win_probability": spread_ev["win_probability"],
+                "confidence_tier": spread_tier,
+                "steam_flag": spread_steam["flag"],
+                "rlm_flag": rlm["flag"],
+                "rlm_sharp_side": rlm.get("sharp_side"),
+                "conflict_flag": bool(conflict),
+                "weather_adj": 0.0,
+                "is_dome": bool(row["is_dome"]),
+                "qb_override": False,
+                "home_epa_off": _safe_float(row.get("epa_per_play_off_L4_home")),
+                "away_epa_off": _safe_float(row.get("epa_per_play_off_L4_away")),
+                "home_epa_def": _safe_float(row.get("epa_per_play_def_L4_home")),
+                "away_epa_def": _safe_float(row.get("epa_per_play_def_L4_away")),
+                "home_cpoe": _safe_float(row.get("cpoe_L4_home")),
+                "away_cpoe": _safe_float(row.get("cpoe_L4_away")),
+            })
 
         # --- Total market signals ---
         open_total = opening.get("total", row["dk_total"])
