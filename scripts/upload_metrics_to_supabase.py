@@ -25,6 +25,14 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 # Keys: parquet column names from team_metrics_all.parquet
 # Values: actual PostgreSQL column names (lowercase — Postgres folds unquoted identifiers)
 SUPABASE_COL_MAP = {
+    # Opponent-adjusted (what config.py's feature list actually uses).
+    "epa_per_play_off_adj_L4": "epa_off_adj_l4",
+    "epa_per_play_off_adj_L8": "epa_off_adj_l8",
+    "epa_per_play_def_adj_L4": "epa_def_adj_l4",
+    "epa_per_play_def_adj_L8": "epa_def_adj_l8",
+    "success_rate_off_adj_L4": "success_rate_off_adj_l4",
+    "success_rate_def_adj_L4": "success_rate_def_adj_l4",
+    # Raw equivalents, kept for comparison / A-B testing.
     "epa_per_play_off_L4": "epa_off_l4",
     "epa_per_play_off_L8": "epa_off_l8",
     "epa_per_play_def_L4": "epa_def_l4",

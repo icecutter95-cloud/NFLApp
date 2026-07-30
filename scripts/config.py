@@ -61,10 +61,14 @@ OUTDOOR_COLD_TEAMS = {"GB", "CHI", "BUF", "PIT", "CLE", "NYG", "NYJ", "NE", "KC"
 # ---------------------------------------------------------------------------
 
 _TEAM_METRIC_COLS = [
-    "epa_per_play_off_L4", "epa_per_play_off_L8",
-    "epa_per_play_def_L4", "epa_per_play_def_L8",
+    # Opponent-ADJUSTED EPA / success rate. Raw versions are still computed by
+    # compute_metrics.py (epa_per_play_off_L4 etc.) — swap these back to compare.
+    # Adjustment subtracts the faced unit's established strength, so a big number
+    # against a bad defense no longer counts the same as one against a good defense.
+    "epa_per_play_off_adj_L4", "epa_per_play_off_adj_L8",
+    "epa_per_play_def_adj_L4", "epa_per_play_def_adj_L8",
     "epa_pass_off_L4", "epa_rush_off_L4",
-    "success_rate_off_L4", "success_rate_def_L4",
+    "success_rate_off_adj_L4", "success_rate_def_adj_L4",
     "cpoe_L4", "cpoe_L8",
     "third_down_conv_off_season", "third_down_stop_def_season",
     "rz_td_pct_off_season",

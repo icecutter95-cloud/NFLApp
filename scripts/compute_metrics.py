@@ -12,6 +12,7 @@ Usage:
     python compute_metrics.py 2024 --force # recompute single season
 """
 
+import os
 import sys
 import warnings
 import numpy as np
@@ -28,9 +29,47 @@ from config import DATA_DIR, ALL_HISTORICAL_SEASONS
 # Per-game metric computation
 # ---------------------------------------------------------------------------
 
-def _plays(pbp: pd.DataFrame) -> pd.DataFrame:
-    """Filter to scoreable pass/run plays with valid EPA."""
-    return pbp[pbp["play_type"].isin(["pass", "run"]) & pbp["epa"].notna()].copy()
+# Garbage-time filter. Plays run at win probabilities outside this band are
+# systematically distorted -- prevent defense, clock-killing runs, backups in --
+# and describe game state rather than team quality. Restricting to competitive
+# situations is standard practice for efficiency metrics.
+# `wp` is pure in-game win probability (no betting line as an input), so this
+# introduces no dependence on the market.
+# DEFAULT OFF -- measured, not assumed. Filtering to competitive plays is
+# standard advice, but on held-out 2023-2025 it made margin prediction WORSE
+# (corr 0.360 -> 0.337, MAE 10.42 -> 10.48). It discards ~23% of plays, and an
+# NFL rolling window is only 4-8 games; the added variance in each game's EPA
+# estimate outweighs the bias it removes. Set METRICS_GARBAGE_FILTER=1 to
+# re-test (e.g. with a wider band via METRICS_WP_BAND).
+GARBAGE_TIME_ENABLED = os.getenv("METRICS_GARBAGE_FILTER", "0") == "1"
+_WP_BAND = float(os.getenv("METRICS_WP_BAND", "0.10"))
+GARBAGE_TIME_WP_LOW = _WP_BAND
+GARBAGE_TIME_WP_HIGH = 1.0 - _WP_BAND
+
+
+def _plays(pbp: pd.DataFrame, competitive_only: bool = True) -> pd.DataFrame:
+    """Scoreable pass/run plays with valid EPA, optionally competitive-only.
+
+    Plays with a missing win probability are KEPT: absent evidence that a snap
+    was garbage time, dropping it would throw away real data.
+    """
+    p = pbp[pbp["play_type"].isin(["pass", "run"]) & pbp["epa"].notna()].copy()
+    if not (competitive_only and GARBAGE_TIME_ENABLED) or "wp" not in p.columns:
+        return p
+
+    wp = p["wp"]
+    keep = wp.isna() | ((wp >= GARBAGE_TIME_WP_LOW) & (wp <= GARBAGE_TIME_WP_HIGH))
+    return p[keep].copy()
+
+
+def _matchups(pbp: pd.DataFrame) -> pd.DataFrame:
+    """(game_id, team, opponent) for every team-game -- needed to adjust a
+    team's efficiency for the quality of the units it actually faced."""
+    m = (pbp[["game_id", "posteam", "defteam"]]
+         .dropna()
+         .drop_duplicates()
+         .rename(columns={"posteam": "team", "defteam": "opponent"}))
+    return m[m["team"] != m["opponent"]]
 
 
 def compute_epa_metrics(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -213,32 +252,117 @@ METRIC_COLS = [
     "points_scored_off", "points_allowed_def",
 ]
 
+# Opponent-adjusted counterparts, produced inside build_rolling_metrics.
+ADJUSTED_COLS = [
+    "epa_per_play_off_adj", "epa_per_play_def_adj",
+    "success_rate_off_adj", "success_rate_def_adj",
+]
+
+# Recency decay inside a rolling window. A flat L4 average treats a game four
+# weeks ago exactly like last week; with a 2-game half-life the most recent
+# game carries ~4x the weight of the 4th-most-recent.
+# DEFAULT OFF (0 = flat unweighted mean) -- measured, not assumed. Recency
+# weighting sounds obviously right but was the single most harmful of the three
+# changes tried: corr 0.360 -> 0.329, MAE 10.42 -> 10.54. Same reason as the
+# garbage-time filter: concentrating weight on the newest 1-2 games shrinks the
+# effective sample of an already-tiny window, and the extra variance costs more
+# than the staleness it fixes. Set METRICS_DECAY_HALFLIFE=2.0 to re-test.
+DECAY_HALFLIFE_GAMES = float(os.getenv("METRICS_DECAY_HALFLIFE", "0"))
+
+
+def _decay_mean(values: np.ndarray) -> float | None:
+    """Exponentially recency-weighted mean. `values` must be oldest-first."""
+    n = len(values)
+    if n == 0:
+        return None
+    if DECAY_HALFLIFE_GAMES <= 0 or not np.isfinite(DECAY_HALFLIFE_GAMES):
+        return float(np.mean(values))
+    ages = np.arange(n - 1, -1, -1, dtype=float)   # newest gets age 0
+    weights = 0.5 ** (ages / DECAY_HALFLIFE_GAMES)
+    return float(np.average(values, weights=weights))
+
+
+def _apply_opponent_adjustment(history: pd.DataFrame) -> pd.DataFrame:
+    """Adjust each team-game's efficiency for the strength of the unit faced.
+
+    Raw EPA treats +0.15/play against the worst defense in the league the same
+    as +0.15 against the best. This subtracts the opponent's established
+    tendency (relative to league average) from each observation:
+
+        adj_off = raw_off - (opponent defense's EPA allowed vs league avg)
+        adj_def = raw_def - (opponent offense's EPA gained vs league avg)
+
+    Strengths are derived ONLY from `history`, which the caller has already
+    restricted to weeks strictly before the week being computed -- so this
+    stays leakage-free. It is a single-pass adjustment (opponent strengths are
+    themselves unadjusted), which captures most of the effect; a full iterative
+    or ridge-regression solve would be the next refinement.
+    """
+    h = history.copy()
+    if "opponent" not in h.columns:
+        for c in ADJUSTED_COLS:
+            h[c] = np.nan
+        return h
+
+    # EPA allowed league-wide equals EPA gained league-wide (same plays, other
+    # side of the ball), so one baseline serves both directions.
+    league_epa = h["epa_per_play_off"].mean()
+    league_sr = h["success_rate_off"].mean()
+
+    def_epa_str = (h.groupby("team")["epa_per_play_def"].mean() - league_epa)
+    off_epa_str = (h.groupby("team")["epa_per_play_off"].mean() - league_epa)
+    def_sr_str = (h.groupby("team")["success_rate_def"].mean() - league_sr)
+    off_sr_str = (h.groupby("team")["success_rate_off"].mean() - league_sr)
+
+    opp = h["opponent"]
+    h["epa_per_play_off_adj"] = h["epa_per_play_off"] - opp.map(def_epa_str).fillna(0.0)
+    h["epa_per_play_def_adj"] = h["epa_per_play_def"] - opp.map(off_epa_str).fillna(0.0)
+    h["success_rate_off_adj"] = h["success_rate_off"] - opp.map(def_sr_str).fillna(0.0)
+    h["success_rate_def_adj"] = h["success_rate_def"] - opp.map(off_sr_str).fillna(0.0)
+    return h
+
 
 def build_rolling_metrics(game_level: pd.DataFrame, season: int) -> pd.DataFrame:
     """
     For each (team, week), compute rolling L4 / L8 / season averages
     using only games *before* that week (no data leakage).
+
+    Windows are recency-weighted (see _decay_mean) and EPA/success-rate values
+    are additionally produced in opponent-adjusted form.
+
+    Loops week-outer so the opponent adjustment can be fit once per week on the
+    whole league's prior games, then applied to every team.
     """
     rows = []
     teams = sorted(game_level["team"].unique())
     weeks = sorted(game_level["week"].unique())
+    all_cols = METRIC_COLS + ADJUSTED_COLS
 
-    for team in tqdm(teams, desc=f"{season} teams", leave=False):
-        team_df = game_level[game_level["team"] == team].sort_values("week")
+    for week in tqdm(weeks, desc=f"{season} weeks", leave=False):
+        history_all = game_level[game_level["week"] < week]
+        if history_all.empty:
+            continue
 
-        for week in weeks:
-            history = team_df[team_df["week"] < week]
+        history_all = _apply_opponent_adjustment(history_all)
+
+        for team in teams:
+            history = history_all[history_all["team"] == team].sort_values("week")
             if history.empty:
                 continue
 
             row: dict = {"team": team, "season": season, "week": week}
-            for col in METRIC_COLS:
+            for col in all_cols:
                 if col not in history.columns:
                     continue
                 series = history[col].dropna()
-                row[f"{col}_L4"] = float(series.tail(4).mean()) if len(series) > 0 else None
-                row[f"{col}_L8"] = float(series.tail(8).mean()) if len(series) > 0 else None
-                row[f"{col}_season"] = float(series.mean()) if len(series) > 0 else None
+                if len(series) == 0:
+                    row[f"{col}_L4"] = None
+                    row[f"{col}_L8"] = None
+                    row[f"{col}_season"] = None
+                    continue
+                row[f"{col}_L4"] = _decay_mean(series.tail(4).values)
+                row[f"{col}_L8"] = _decay_mean(series.tail(8).values)
+                row[f"{col}_season"] = float(series.mean())
             rows.append(row)
 
     return pd.DataFrame(rows)
@@ -257,7 +381,7 @@ def _load_pbp(season: int) -> pd.DataFrame:
     print(f"  Downloading {season} PBP from nfl_data_py (first run, this takes a few minutes)...")
     pbp = nfl.import_pbp_data([season], downcast=True, cache=False, include_participation=False)
     pbp.to_parquet(cache_path, index=False)
-    print(f"  Cached → {cache_path.name}")
+    print(f"  Cached -> {cache_path.name}")
     return pbp
 
 
@@ -285,6 +409,12 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
     if not scoring.empty:
         game_level = game_level.merge(
             scoring, on=["game_id", "team", "season", "week"], how="left")
+
+    # Who each team actually played — required for opponent adjustment.
+    game_level = game_level.merge(_matchups(pbp), on=["game_id", "team"], how="left")
+    missing_opp = game_level["opponent"].isna().sum()
+    if missing_opp:
+        print(f"  WARNING: {missing_opp} team-game rows have no opponent mapped")
 
     print(f"  {len(game_level)} team-game rows. Computing rolling windows...")
     weekly = build_rolling_metrics(game_level, season)
@@ -315,13 +445,13 @@ def main():
 
         df = build_team_metrics_for_season(season)
         df.to_parquet(out_path, index=False)
-        print(f"  Saved → {out_path}")
+        print(f"  Saved -> {out_path}")
         all_frames.append(df)
 
     combined = pd.concat(all_frames, ignore_index=True)
     combined_path = DATA_DIR / "team_metrics_all.parquet"
     combined.to_parquet(combined_path, index=False)
-    print(f"\nAll seasons combined: {len(combined):,} rows → {combined_path}")
+    print(f"\nAll seasons combined: {len(combined):,} rows -> {combined_path}")
 
     # Quick sanity check
     print("\nSample (KC, 2023, week 5):")

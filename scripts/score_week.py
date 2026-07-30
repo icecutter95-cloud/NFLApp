@@ -468,6 +468,14 @@ def current_week_number(season: int) -> int:
 # Maps Supabase DB column name → feature name the model was trained on.
 # Postgres lowercases all unquoted identifiers, so DB columns are all-lowercase.
 METRIC_RENAME = {
+    # Opponent-adjusted — these are the ones in SPREAD_FEATURES. Without them
+    # build_feature_matrix would leave the model's key inputs at 0.0.
+    "epa_off_adj_l4":          "epa_per_play_off_adj_L4",
+    "epa_off_adj_l8":          "epa_per_play_off_adj_L8",
+    "epa_def_adj_l4":          "epa_per_play_def_adj_L4",
+    "epa_def_adj_l8":          "epa_per_play_def_adj_L8",
+    "success_rate_off_adj_l4": "success_rate_off_adj_L4",
+    "success_rate_def_adj_l4": "success_rate_def_adj_L4",
     "epa_off_l4":          "epa_per_play_off_L4",
     "epa_off_l8":          "epa_per_play_off_L8",
     "epa_def_l4":          "epa_per_play_def_L4",
