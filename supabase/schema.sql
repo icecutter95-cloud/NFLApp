@@ -126,15 +126,23 @@ CREATE TABLE IF NOT EXISTS public_betting (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS weather (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    game_id             TEXT NOT NULL UNIQUE,
+    game_id             TEXT NOT NULL UNIQUE,  -- The Odds API event ID (refresh-weather
+                                                -- reads upcoming games from line_open_close),
+                                                -- NOT the nfl_data_py game_id. Join on
+                                                -- (home_team, away_team) below.
+    home_team           TEXT,
+    away_team           TEXT,
+    commence_time       TIMESTAMPTZ,  -- kickoff
+    forecast_for        TIMESTAMPTZ,  -- timestamp of the forecast slot actually used
     stadium             TEXT,
     is_dome             BOOLEAN DEFAULT FALSE,
     wind_speed_mph      REAL DEFAULT 0,
     wind_direction      TEXT,
     temp_fahrenheit     REAL,
-    precipitation_prob  REAL DEFAULT 0,
+    precipitation_prob  REAL DEFAULT 0,  -- 0-1
     fetched_at          TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_weather_teams ON weather (home_team, away_team);
 
 -- ============================================================
 -- INJURY_FLAGS — QB override and key injury flags

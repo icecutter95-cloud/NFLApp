@@ -406,12 +406,27 @@ def fetch_opening_lines(team_pairs: list) -> dict:
     return out
 
 
-def fetch_weather(game_ids: list) -> dict:
-    resp = (supabase.table("weather")
-            .select("*")
-            .in_("game_id", game_ids)
-            .execute())
-    return {row["game_id"]: row for row in resp.data}
+def fetch_weather(team_pairs: list) -> dict:
+    """Forecast conditions at kickoff, keyed by (home_team, away_team).
+
+    weather.game_id is The Odds API's event ID (refresh-weather reads upcoming
+    games from line_open_close), NOT the nfl_data_py game_id used elsewhere —
+    the same mismatch that broke the line joins. So join on the team pair,
+    consistently with fetch_latest_lines/fetch_opening_lines.
+    """
+    if not team_pairs:
+        return {}
+    home_teams = list({h for h, _ in team_pairs})
+    valid_pairs = set(team_pairs)
+    rows = _fetch_paged(lambda: supabase.table("weather")
+                        .select("*")
+                        .in_("home_team", home_teams))
+    out: dict = {}
+    for row in rows:
+        key = (row.get("home_team"), row.get("away_team"))
+        if key in valid_pairs:
+            out[key] = row
+    return out
 
 
 def fetch_public_betting(game_ids: list) -> dict:
@@ -535,7 +550,7 @@ def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
         row["dk_spread"] = float(line_data.get("spread_home", 0) or 0)
         row["dk_total"] = float(line_data.get("total", 45) or 45)
 
-        w = weather.get(game_id, {})
+        w = weather.get((game["home_team"], game["away_team"]), {})
         row["wind_speed_mph"] = float(w.get("wind_speed_mph", 0) or 0)
         row["temp_fahrenheit"] = float(w.get("temp_fahrenheit", 72) or 72)
         row["precipitation_prob"] = float(w.get("precipitation_prob", 0) or 0)
@@ -736,7 +751,7 @@ def run_weekly_scoring(season: int, week: int):
     lines = fetch_latest_lines(team_pairs)
     lh_by_game = fetch_line_history(team_pairs)
     opening = fetch_opening_lines(team_pairs)
-    weather = fetch_weather(game_ids)
+    weather = fetch_weather(team_pairs)
     pub = fetch_public_betting(game_ids)
 
     # Build feature matrix
