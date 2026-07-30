@@ -31,18 +31,79 @@ MAX_WIN_PROB = 0.90        # avoid overconfident extrapolation into the sparse h
 
 BUCKET_EDGES = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 7, 10, 15, 20, 25, 999]
 
+# The curve is FIT on one set of seasons and VALIDATED on another it never saw.
+# Fitting and reporting on the same seasons is how a meaningless curve ends up
+# displayed as a confident number: isotonic regression chooses which buckets to
+# pool by looking at those very outcomes, so a flattering pooled bucket is
+# selection on the test set, not a finding.
+#
+# Measured (fit 2023-2024, applied to 2025): corr(predicted win prob, actual
+# win) = +0.082, and two of five edge bands landed on the OPPOSITE side of
+# break-even from their prediction -- e.g. the 2.5-3.5 band was fitted at 57.6%
+# and actually went 48.6%. The curve had been driving a displayed "+13.4% EV".
+CALIBRATION_FIT_SEASONS = [2023, 2024]
+CALIBRATION_HOLDOUT_SEASONS = [2025]
 
-def honest_predictions(feature_cols: list, target_col: str, model_label: str):
-    """Train strictly on seasons before the eval window, predict on the eval
-    window. Same decoupling as backtest.py -- never contaminated by whatever
-    TRAIN_SEASONS is set to for the production model."""
+# Held-out correlation the curve must clear to be shipped as-is. Below this we
+# ship a FLAT break-even curve, so the UI reports 0% EV rather than a number
+# that cannot be justified out of sample.
+MIN_HOLDOUT_CORR = 0.15
+
+
+def flat_calibrator() -> IsotonicRegression:
+    """A curve that always returns break-even -> EV 0% at every edge.
+
+    Used when the fitted curve fails out-of-sample validation. Displaying 0%
+    is the honest output when edge magnitude demonstrably carries no
+    information about win probability.
+    """
+    iso = IsotonicRegression(y_min=MIN_WIN_PROB, y_max=MIN_WIN_PROB,
+                             out_of_bounds="clip", increasing=True)
+    iso.fit([0.0, 100.0], [MIN_WIN_PROB, MIN_WIN_PROB])
+    return iso
+
+
+def validate_calibration(iso: IsotonicRegression, preds, actuals, label: str) -> bool:
+    """Does the curve predict outcomes on seasons it was never fit on?"""
+    preds = np.asarray(preds, float)
+    actuals = np.asarray(actuals, float)
+    mask = (~np.isnan(preds)) & (~np.isnan(actuals)) & (np.abs(actuals) >= 0.01)
+    edge = np.abs(preds[mask])
+    won = (((preds > 0) & (actuals > 0)) | ((preds < 0) & (actuals < 0)))[mask].astype(float)
+    edge, won = edge[edge >= 0.5], won[edge >= 0.5]
+
+    if len(edge) < 50:
+        print(f"  {label}: only {len(edge)} holdout bets — cannot validate, shipping FLAT")
+        return False
+
+    predicted = iso.predict(edge)
+    if predicted.std() < 1e-9:
+        print(f"  {label}: fitted curve is already flat")
+        return False
+
+    corr = float(np.corrcoef(predicted, won)[0, 1])
+    ok = corr >= MIN_HOLDOUT_CORR
+    print(f"  {label}: holdout corr(predicted, actual) = {corr:+.3f} on {len(edge)} bets "
+          f"-> {'PASS, shipping fitted curve' if ok else 'FAIL, shipping FLAT break-even curve'}")
+    return ok
+
+
+def honest_predictions(feature_cols: list, target_col: str, model_label: str,
+                       seasons: list | None = None):
+    """Train strictly on seasons before the eval window, predict on `seasons`.
+
+    Same decoupling as backtest.py -- never contaminated by whatever
+    TRAIN_SEASONS is set to for the production model. `seasons` lets the caller
+    request the calibration-fit slice and the holdout slice separately, so the
+    curve is never validated on the data it was fit to.
+    """
     eval_seasons = VALIDATE_SEASONS + [TEST_SEASON]
     train_seasons = list(range(2018, min(eval_seasons)))
 
     X_tr, y_tr, df_tr = load_split(train_seasons, feature_cols, target_col)
     model = train_model(X_tr, y_tr, df_tr, model_label)
 
-    X_val, y_val, df_val = load_split(eval_seasons, feature_cols, target_col)
+    X_val, y_val, df_val = load_split(seasons or eval_seasons, feature_cols, target_col)
     preds = model.predict(X_val)
     return preds, y_val.values
 
@@ -77,34 +138,35 @@ def fit_calibration(preds, actuals, min_edge: float = 0.5, label: str = "") -> I
 
 
 def main():
-    print("=" * 60)
-    print("SPREAD EV calibration")
-    print("=" * 60)
-    spread_preds, spread_actuals = honest_predictions(
-        SPREAD_FEATURES, "home_cover_surplus", "spread_calib_diagnostic")
-    spread_iso = fit_calibration(spread_preds, spread_actuals, label="SPREAD")
-    spread_path = MODELS_DIR / "spread_calibration.joblib"
-    joblib.dump(spread_iso, spread_path)
-    print(f"\nSaved -> {spread_path}")
+    for label, feats, target, out_name in [
+        ("SPREAD", SPREAD_FEATURES, "home_cover_surplus", "spread_calibration.joblib"),
+        ("TOTAL",  TOTAL_FEATURES,  "ou_surplus",         "total_calibration.joblib"),
+    ]:
+        print("=" * 64)
+        print(f"{label} EV calibration")
+        print(f"  fit on {CALIBRATION_FIT_SEASONS}, validated on {CALIBRATION_HOLDOUT_SEASONS}")
+        print("=" * 64)
 
-    # Sanity check: show what the OLD guessed formula vs NEW calibrated curve
-    # produce at a few representative edge sizes.
-    print("\n  Old guess vs new calibration (win prob):")
-    implied = 110 / 210
-    for e in [1, 2, 3, 5, 8, 11, 15, 20, 25, 30]:
-        old = min(implied + e * 0.03, 0.85)
-        new = float(spread_iso.predict([e])[0])
-        print(f"    edge={e:>4}: old={old*100:5.1f}%   new={new*100:5.1f}%")
+        fit_p, fit_a = honest_predictions(feats, target, f"{label.lower()}_cal_fit",
+                                          CALIBRATION_FIT_SEASONS)
+        iso = fit_calibration(fit_p, fit_a, label=label)
 
-    print("\n" + "=" * 60)
-    print("TOTAL EV calibration (for future use once totals model has signal)")
-    print("=" * 60)
-    total_preds, total_actuals = honest_predictions(
-        TOTAL_FEATURES, "ou_surplus", "total_calib_diagnostic")
-    total_iso = fit_calibration(total_preds, total_actuals, label="TOTAL")
-    total_path = MODELS_DIR / "total_calibration.joblib"
-    joblib.dump(total_iso, total_path)
-    print(f"\nSaved -> {total_path}")
+        ho_p, ho_a = honest_predictions(feats, target, f"{label.lower()}_cal_ho",
+                                        CALIBRATION_HOLDOUT_SEASONS)
+        print()
+        passed = validate_calibration(iso, ho_p, ho_a, label)
+        final = iso if passed else flat_calibrator()
+
+        path = MODELS_DIR / out_name
+        joblib.dump(final, path)
+        print(f"  Saved -> {path.name}")
+
+        print("  edge -> win prob -> EV as shipped:")
+        payout = 100 / 110
+        for e in [1, 2, 3, 5, 8, 12, 20]:
+            wp = float(final.predict([e])[0])
+            print(f"    edge {e:>4}: winprob {wp*100:5.2f}%   EV {(wp*payout-(1-wp))*100:+6.1f}%")
+        print()
 
 
 if __name__ == "__main__":
