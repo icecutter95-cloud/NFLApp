@@ -74,6 +74,7 @@ function parseOddsResponse(data: OddsApiGame[]): Array<{
   game_id: string;
   home_team: string | null;
   away_team: string | null;
+  commence_time: string | null;
   spread_home: number | null;
   total: number | null;
   book: string;
@@ -98,6 +99,9 @@ function parseOddsResponse(data: OddsApiGame[]): Array<{
       game_id: game.id,
       home_team: TEAM_NAME_TO_ABBR[game.home_team] ?? null,
       away_team: TEAM_NAME_TO_ABBR[game.away_team] ?? null,
+      // Kickoff time -- lets the line_open_close view derive the CLOSING line
+      // as the last snapshot before kickoff, rather than guessing.
+      commence_time: game.commence_time ?? null,
       spread_home: homeSpreadOutcome?.point ?? null,
       total: overOutcome?.point ?? null,
       book: "draftkings",
@@ -134,10 +138,18 @@ serve(async (req) => {
     const data: OddsApiGame[] = await res.json();
     const rows = parseOddsResponse(data);
 
-    // Check which game_ids already have rows this week (to set is_opening)
+    // Which games have we already recorded a line for? Query the
+    // line_open_close VIEW rather than line_history directly: the view is
+    // aggregated to ONE ROW PER GAME, so this can't be truncated by the
+    // 1000-row response cap. Querying line_history directly (as this used to)
+    // returns every historical snapshot, so once the table passed 1000 rows
+    // the result would silently truncate, `seenGameIds` would come back
+    // incomplete, and already-tracked games would be re-flagged as openers --
+    // corrupting the opening line, which is the one number we most need to
+    // preserve for closing-line-value tracking.
     const gameIds = rows.map((r) => r.game_id);
     const { data: existing } = await supabase
-      .from("line_history")
+      .from("line_open_close")
       .select("game_id")
       .in("game_id", gameIds);
 

@@ -16,7 +16,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import nfl_data_py as nfl
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from supabase import create_client
 
 warnings.filterwarnings("ignore")
@@ -307,6 +307,30 @@ def fetch_team_metrics(season: int, week: int) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+_PAGE_SIZE = 1000   # PostgREST caps a single response at 1000 rows
+
+
+def _fetch_paged(build_query, page_size: int = _PAGE_SIZE) -> list:
+    """Run a PostgREST query in pages until exhausted.
+
+    Supabase silently truncates any single response at 1000 rows -- it does not
+    error, it just returns fewer rows than exist. line_history grows by ~272
+    rows per refresh (one per game on the full-season slate), so unpaginated
+    reads here would quietly start dropping data within days of the cron going
+    live, corrupting steam detection with no visible failure. `build_query`
+    must return a FRESH query builder each call, since .range() mutates it.
+    """
+    rows: list = []
+    start = 0
+    while True:
+        resp = build_query().range(start, start + page_size - 1).execute()
+        batch = resp.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        start += page_size
+
+
 def fetch_latest_lines(team_pairs: list) -> dict:
     """Most recent line_history entry per (home_team, away_team) game.
 
@@ -319,32 +343,37 @@ def fetch_latest_lines(team_pairs: list) -> dict:
         return {}
     home_teams = list({h for h, _ in team_pairs})
     valid_pairs = set(team_pairs)
-    resp = (supabase.table("line_history")
-            .select("home_team, away_team, spread_home, total, recorded_at")
-            .in_("home_team", home_teams)
-            .order("recorded_at", desc=True)
-            .execute())
+    rows = _fetch_paged(lambda: supabase.table("line_history")
+                        .select("home_team, away_team, spread_home, total, recorded_at")
+                        .in_("home_team", home_teams)
+                        .order("recorded_at", desc=True))
     lines: dict = {}
-    for row in resp.data:
+    for row in rows:
         key = (row.get("home_team"), row.get("away_team"))
         if key in valid_pairs and key not in lines:
             lines[key] = row
     return lines
 
 
-def fetch_line_history(team_pairs: list) -> dict:
-    """Full line history per (home_team, away_team) game (for steam detection)."""
+def fetch_line_history(team_pairs: list, lookback_hours: int = 48) -> dict:
+    """Recent line history per (home_team, away_team) game, for steam detection.
+
+    Bounded to the last `lookback_hours` because detect_steam only inspects a
+    2-hour window -- pulling a whole season of snapshots per team would be
+    wasteful and, once the table is large, slow.
+    """
     if not team_pairs:
         return {}
     home_teams = list({h for h, _ in team_pairs})
     valid_pairs = set(team_pairs)
-    resp = (supabase.table("line_history")
-            .select("home_team, away_team, spread_home, total, recorded_at")
-            .in_("home_team", home_teams)
-            .order("recorded_at")
-            .execute())
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+    rows = _fetch_paged(lambda: supabase.table("line_history")
+                        .select("home_team, away_team, spread_home, total, recorded_at")
+                        .in_("home_team", home_teams)
+                        .gte("recorded_at", cutoff)
+                        .order("recorded_at"))
     history: dict = {}
-    for row in resp.data:
+    for row in rows:
         key = (row.get("home_team"), row.get("away_team"))
         if key in valid_pairs:
             history.setdefault(key, []).append(row)
@@ -352,17 +381,29 @@ def fetch_line_history(team_pairs: list) -> dict:
 
 
 def fetch_opening_lines(team_pairs: list) -> dict:
+    """Opening line per game, read from the line_open_close view.
+
+    The view is aggregated to one row per game, so it cannot be truncated by
+    the 1000-row cap the way a raw line_history scan can. It also derives the
+    opener from the earliest recorded_at rather than trusting the is_opening
+    flag, which is set at insert time and therefore can't be corrected after
+    the fact.
+    """
     if not team_pairs:
         return {}
     home_teams = list({h for h, _ in team_pairs})
     valid_pairs = set(team_pairs)
-    resp = (supabase.table("line_history")
-            .select("home_team, away_team, spread_home, total")
-            .eq("is_opening", True)
-            .in_("home_team", home_teams)
-            .execute())
-    return {(row.get("home_team"), row.get("away_team")): row
-            for row in resp.data if (row.get("home_team"), row.get("away_team")) in valid_pairs}
+    rows = _fetch_paged(lambda: supabase.table("line_open_close")
+                        .select("home_team, away_team, opening_spread_home, opening_total")
+                        .in_("home_team", home_teams))
+    out: dict = {}
+    for row in rows:
+        key = (row.get("home_team"), row.get("away_team"))
+        if key in valid_pairs:
+            # Normalise to the column names build_projections expects.
+            out[key] = {"spread_home": row.get("opening_spread_home"),
+                        "total": row.get("opening_total")}
+    return out
 
 
 def fetch_weather(game_ids: list) -> dict:

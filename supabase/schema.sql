@@ -51,12 +51,61 @@ CREATE TABLE IF NOT EXISTS line_history (
                                   -- Joins to games happen via (home_team, away_team) below.
     home_team   TEXT,            -- standard abbreviation (e.g. "KC"), translated from Odds API full name
     away_team   TEXT,
+    commence_time TIMESTAMPTZ,   -- kickoff, from The Odds API; lets the view below
+                                  -- derive the CLOSING line as the last snapshot
+                                  -- recorded before kickoff
     recorded_at TIMESTAMPTZ DEFAULT NOW(),
-    spread_home REAL,
+    spread_home REAL,            -- STANDARD convention: negative = home favored
     total       REAL,
     book        TEXT DEFAULT 'draftkings',
     is_opening  BOOLEAN DEFAULT FALSE
 );
+
+-- ============================================================
+-- LINE_OPEN_CLOSE — opening/closing line + movement, one row per game
+-- ============================================================
+-- Aggregating to one row per game makes this safe to query from the frontend
+-- and edge functions: a raw line_history scan grows by ~272 rows per refresh
+-- and would silently truncate at PostgREST's 1000-row response cap.
+-- Identity fields (team/kickoff) are taken from the most recent NON-NULL row
+-- rather than the opening row, because columns were added to line_history
+-- after the earliest snapshots were written.
+CREATE OR REPLACE VIEW line_open_close
+WITH (security_invoker = true) AS
+WITH ranked AS (
+    SELECT
+        game_id, home_team, away_team, commence_time,
+        recorded_at, spread_home, total,
+        ROW_NUMBER() OVER (PARTITION BY game_id ORDER BY recorded_at ASC) AS rn_open,
+        ROW_NUMBER() OVER (
+            PARTITION BY game_id
+            ORDER BY (commence_time IS NOT NULL AND recorded_at < commence_time) DESC,
+                     recorded_at DESC
+        ) AS rn_close
+    FROM line_history
+),
+identity AS (
+    SELECT
+        game_id,
+        (array_remove(array_agg(home_team     ORDER BY recorded_at DESC), NULL))[1] AS home_team,
+        (array_remove(array_agg(away_team     ORDER BY recorded_at DESC), NULL))[1] AS away_team,
+        (array_remove(array_agg(commence_time ORDER BY recorded_at DESC), NULL))[1] AS commence_time
+    FROM line_history
+    GROUP BY game_id
+)
+SELECT
+    i.game_id, i.home_team, i.away_team, i.commence_time,
+    o.recorded_at AS opened_at,
+    o.spread_home AS opening_spread_home,
+    o.total       AS opening_total,
+    c.recorded_at AS closed_at,
+    c.spread_home AS closing_spread_home,
+    c.total       AS closing_total,
+    (c.spread_home - o.spread_home) AS spread_movement,
+    (c.total       - o.total)       AS total_movement
+FROM identity i
+LEFT JOIN (SELECT * FROM ranked WHERE rn_open  = 1) o USING (game_id)
+LEFT JOIN (SELECT * FROM ranked WHERE rn_close = 1) c USING (game_id);
 
 -- ============================================================
 -- PUBLIC_BETTING — bet % and money % from ActionNetwork / Covers
