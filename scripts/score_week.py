@@ -454,6 +454,57 @@ def fetch_weather(team_pairs: list) -> dict:
     return out
 
 
+# Features that can legitimately be all-zero for a given slate, so an all-zero
+# column here is informational rather than a bug:
+#   week 1  -> every team has identical rest, nobody is off a bye
+#   preseason / quiet injury report -> no players listed out
+_EXPECTED_SPARSE_FEATURES = {
+    "rest_diff", "is_short_week_home", "is_short_week_away",
+    "had_bye_home", "had_bye_away",
+    "is_divisional", "conflict_flag",
+    "inj_qb_out_home", "inj_qb_out_away",
+    "inj_out_off_home", "inj_out_off_away",
+    "inj_out_def_home", "inj_out_def_away",
+    "inj_out_total_home", "inj_out_total_away",
+    "inj_questionable_home", "inj_questionable_away",
+    "precipitation_prob", "wind_speed_mph",
+}
+
+
+def assert_feature_parity(features: pd.DataFrame, model_features: list, label: str) -> None:
+    """Fail loudly on train/serve feature skew.
+
+    This pipeline has now hit the same bug three times: a feature the model was
+    trained on wasn't computed at serve time, the downstream `if col not in
+    features.columns: features[col] = 0.0` silently filled it with zeros, and
+    the model ran on garbage inputs with no error. It happened with the
+    opponent-adjusted EPA columns (missing from Supabase), then again with the
+    travel and injury features (never computed in score_week).
+
+    A MISSING feature is unambiguously a bug -> raise. An all-zero feature that
+    is present may be legitimate (see _EXPECTED_SPARSE_FEATURES) -> warn, since
+    only the caller knows whether week 1 having no bye weeks is expected.
+    """
+    missing = [c for c in model_features if c not in features.columns]
+    if missing:
+        raise RuntimeError(
+            f"[{label}] {len(missing)} model feature(s) missing from the live feature "
+            f"matrix: {sorted(missing)[:10]}"
+            f"{' ...' if len(missing) > 10 else ''}\n"
+            f"These would be silently zero-filled while the model was trained on real "
+            f"values. Compute them in build_feature_matrix (or add the column to "
+            f"Supabase + METRIC_RENAME) rather than letting them default to 0."
+        )
+
+    zero = [c for c in model_features
+            if features[c].abs().sum() == 0 and c not in _EXPECTED_SPARSE_FEATURES]
+    if zero:
+        print(f"  WARNING [{label}]: {len(zero)} feature(s) are all-zero and not "
+              f"expected to be: {sorted(zero)[:8]}{' ...' if len(zero) > 8 else ''}")
+        print("           Check the upstream source — this is how silent train/serve "
+              "skew has shown up before.")
+
+
 def fetch_injury_aggregates() -> dict:
     """Current injury counts per team, shaped like build_dataset's features.
 
@@ -864,6 +915,10 @@ def run_weekly_scoring(season: int, week: int):
     # not the config list (they may differ if weather cols weren't in training data).
     spread_feat_cols = spread_model.get_booster().feature_names
     total_feat_cols  = total_model.get_booster().feature_names
+
+    # Guard BEFORE the zero-fill below — see assert_feature_parity.
+    assert_feature_parity(features, spread_feat_cols, "spread")
+    assert_feature_parity(features, total_feat_cols, "total")
 
     # Add any missing columns the model expects (fill with 0)
     for col in spread_feat_cols + total_feat_cols:

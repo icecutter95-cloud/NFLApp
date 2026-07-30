@@ -241,6 +241,70 @@ def compute_turnovers(pbp: pd.DataFrame) -> pd.DataFrame:
     return merged[["game_id", "team", "season", "week", "turnover_margin"]]
 
 
+def compute_ngs(season: int) -> pd.DataFrame:
+    """Next Gen Stats aggregated from player-week to team-week.
+
+    These are tracking-derived signals EPA cannot express: how long the QB
+    holds the ball, how much separation receivers create, how many yards a back
+    gains above what the blocking/box justified. Player rows are volume-weighted
+    (attempts / targets) so a backup's small sample doesn't swing the team mean.
+
+    NGS covers 2018+ — unlike FTN charting, which starts in 2022 and therefore
+    can't be used with a 2018-2022 training window.
+    """
+    cache = DATA_DIR / f"ngs_{season}.parquet"
+    if cache.exists():
+        return pd.read_parquet(cache)
+
+    def agg(kind, weight_col, spec):
+        try:
+            d = nfl.import_ngs_data(kind, [season])
+        except Exception as exc:
+            print(f"  WARNING: NGS {kind} unavailable for {season}: {exc}")
+            return pd.DataFrame()
+        d = d[(d["week"] > 0) & (d.get("season_type", "REG") == "REG")].copy()
+        if d.empty:
+            return pd.DataFrame()
+        d = d.rename(columns={"team_abbr": "team"})
+        d[weight_col] = pd.to_numeric(d[weight_col], errors="coerce").fillna(0)
+        out = []
+        for (team, week), g in d.groupby(["team", "week"]):
+            w = g[weight_col]
+            row = {"team": team, "season": season, "week": int(week)}
+            for src, dest in spec.items():
+                if src not in g.columns:
+                    continue
+                v = pd.to_numeric(g[src], errors="coerce")
+                m = v.notna() & (w > 0)
+                row[dest] = float(np.average(v[m], weights=w[m])) if m.any() else np.nan
+            out.append(row)
+        return pd.DataFrame(out)
+
+    p = agg("passing", "attempts", {
+        "avg_time_to_throw": "ngs_time_to_throw",
+        "aggressiveness": "ngs_aggressiveness",
+        "avg_air_yards_differential": "ngs_air_yards_diff",
+    })
+    r = agg("rushing", "rush_attempts", {
+        "rush_yards_over_expected_per_att": "ngs_ryoe_per_att",
+        "percent_attempts_gte_eight_defenders": "ngs_eight_def_pct",
+    })
+    c = agg("receiving", "targets", {
+        "avg_separation": "ngs_separation",
+        "avg_yac_above_expectation": "ngs_yac_oe",
+    })
+
+    frames = [f for f in (p, r, c) if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    merged = frames[0]
+    for f in frames[1:]:
+        merged = merged.merge(f, on=["team", "season", "week"], how="outer")
+    merged.to_parquet(cache, index=False)
+    print(f"  NGS: {len(merged)} team-week rows cached")
+    return merged
+
+
 def compute_scoring_from_schedule(season: int) -> pd.DataFrame:
     """
     Points scored and allowed per team per game, pulled from schedule final scores.
@@ -289,6 +353,10 @@ METRIC_COLS = [
     # Trench play (per dropback) — previously no coverage at all
     "sack_rate_off", "sack_rate_def",
     "qb_hit_rate_off", "qb_hit_rate_def",
+    # Next Gen Stats (tracking-derived, offense only)
+    "ngs_time_to_throw", "ngs_aggressiveness", "ngs_air_yards_diff",
+    "ngs_ryoe_per_att", "ngs_eight_def_pct",
+    "ngs_separation", "ngs_yac_oe",
     # Scoring volume — critical for totals model
     "points_scored_off", "points_allowed_def",
 ]
@@ -439,6 +507,7 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
     pace = compute_pace(pbp)
     to = compute_turnovers(pbp)
     press = compute_pressure(pbp)
+    ngs = compute_ngs(season)
     scoring = compute_scoring_from_schedule(season)
 
     game_level = (epa
@@ -450,6 +519,10 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
 
     if not press.empty:
         game_level = game_level.merge(press, on=["game_id", "team", "season", "week"], how="left")
+
+    # NGS is keyed team-week (one game per team per week), not game_id.
+    if not ngs.empty:
+        game_level = game_level.merge(ngs, on=["team", "season", "week"], how="left")
 
     if not scoring.empty:
         game_level = game_level.merge(
