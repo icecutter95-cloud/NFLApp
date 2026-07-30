@@ -17,12 +17,13 @@ export default function App() {
   const [loading, setLoading]         = useState(true)
   const [view, setView]               = useState('edges')  // 'edges' | 'performance' | 'backtest'
   const [filters, setFilters]         = useState({
-    betType:    'all',
-    confidence: 'all',
-    steamOnly:  false,
-    rlmOnly:    false,
-    minEdge:    0,
-    sortBy:     'ev_pct',
+    betType:         'all',
+    confidence:      'all',
+    steamOnly:       false,
+    rlmOnly:         false,
+    recommendedOnly: false,   // off by default: show the whole slate, not a blank page
+    minEdge:         0,
+    sortBy:          'ev_pct',
   })
 
   useEffect(() => {
@@ -55,6 +56,7 @@ export default function App() {
     if (filters.confidence !== 'all') rows = rows.filter(p => p.confidence_tier   === filters.confidence)
     if (filters.steamOnly)             rows = rows.filter(p => p.steam_flag)
     if (filters.rlmOnly)               rows = rows.filter(p => p.rlm_flag)
+    if (filters.recommendedOnly)       rows = rows.filter(p => p.is_recommended === true)
     if (filters.minEdge > 0)           rows = rows.filter(p => (p.edge_points ?? 0) >= filters.minEdge)
 
     return [...rows].sort((a, b) => {
@@ -85,7 +87,7 @@ export default function App() {
       {view === 'edges' && (
         <>
           <FilterBar filters={filters} onChange={setFilters} />
-          <EdgeList projections={filtered} loading={loading} onBetLogged={fetchData} />
+          <EdgeList projections={filtered} loading={loading} onBetLogged={fetchData} filters={filters} />
         </>
       )}
 

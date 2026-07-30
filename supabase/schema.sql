@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS projections (
     ev_pct           REAL,
     win_probability  REAL,
     confidence_tier  TEXT,          -- 'A' | 'B' | 'C' | 'watch'
+    -- A row is written for EVERY game so the UI can show the full slate and its
+    -- lines. is_recommended marks whether it actually cleared the edge gate
+    -- (SPREAD_MIN_EDGE / TOTALS_MIN_EDGE in config.py); everything else is
+    -- informational and the UI renders it without a tier badge.
+    is_recommended   BOOLEAN NOT NULL DEFAULT FALSE,
     steam_flag       BOOLEAN DEFAULT FALSE,
     rlm_flag         BOOLEAN DEFAULT FALSE,
     rlm_sharp_side   TEXT,

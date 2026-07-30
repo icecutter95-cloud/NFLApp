@@ -617,42 +617,43 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         # → projected_home_margin = model_spread - dk_spread
         projected_margin = round(float(row["model_spread"]) - float(row["dk_spread"]), 1)
 
-        # Only surface a spread bet if it clears the gate. SPREAD_MIN_EDGE is
-        # currently 999 (effectively off) because the honest backtest shows
-        # 52.5% at edge>=1.5 against a 52.38% break-even — no edge. Gated
-        # independently of the totals block below so either can be re-enabled
-        # on its own.
-        if abs(spread_edge) >= SPREAD_MIN_EDGE:
-            projections.append({
-                "game_id": game_id,
-                "season": int(row["season"]),
-                "week": int(row["week"]),
-                "game_date": row["game_date"],
-                "game_time": row["game_time"],
-                "home_team": row["home_team"],
-                "away_team": row["away_team"],
-                "bet_type": "spread",
-                "side": spread_side,
-                "model_line": projected_margin,  # projected home margin (more intuitive than surplus)
-                "dk_line": float(row["dk_spread"]),
-                "edge_points": spread_ev["edge_points"],
-                "ev_pct": spread_ev["ev_pct"],
-                "win_probability": spread_ev["win_probability"],
-                "confidence_tier": spread_tier,
-                "steam_flag": spread_steam["flag"],
-                "rlm_flag": rlm["flag"],
-                "rlm_sharp_side": rlm.get("sharp_side"),
-                "conflict_flag": bool(conflict),
-                "weather_adj": 0.0,
-                "is_dome": bool(row["is_dome"]),
-                "qb_override": False,
-                "home_epa_off": _safe_float(row.get("epa_per_play_off_L4_home")),
-                "away_epa_off": _safe_float(row.get("epa_per_play_off_L4_away")),
-                "home_epa_def": _safe_float(row.get("epa_per_play_def_L4_home")),
-                "away_epa_def": _safe_float(row.get("epa_per_play_def_L4_away")),
-                "home_cpoe": _safe_float(row.get("cpoe_L4_home")),
-                "away_cpoe": _safe_float(row.get("cpoe_L4_away")),
-            })
+        # A row is written for EVERY game so the UI can show the full slate and
+        # its lines. is_recommended marks whether it actually clears the gate.
+        # SPREAD_MIN_EDGE is currently 999 (effectively off) because the honest
+        # backtest shows 52.5% at edge>=1.5 vs a 52.38% break-even — no edge —
+        # so nothing is recommended today, but the games are still visible.
+        # Gated independently of the totals block below.
+        projections.append({
+            "is_recommended": bool(abs(spread_edge) >= SPREAD_MIN_EDGE),
+            "game_id": game_id,
+            "season": int(row["season"]),
+            "week": int(row["week"]),
+            "game_date": row["game_date"],
+            "game_time": row["game_time"],
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+            "bet_type": "spread",
+            "side": spread_side,
+            "model_line": projected_margin,  # projected home margin (more intuitive than surplus)
+            "dk_line": float(row["dk_spread"]),
+            "edge_points": spread_ev["edge_points"],
+            "ev_pct": spread_ev["ev_pct"],
+            "win_probability": spread_ev["win_probability"],
+            "confidence_tier": spread_tier,
+            "steam_flag": spread_steam["flag"],
+            "rlm_flag": rlm["flag"],
+            "rlm_sharp_side": rlm.get("sharp_side"),
+            "conflict_flag": bool(conflict),
+            "weather_adj": 0.0,
+            "is_dome": bool(row["is_dome"]),
+            "qb_override": False,
+            "home_epa_off": _safe_float(row.get("epa_per_play_off_L4_home")),
+            "away_epa_off": _safe_float(row.get("epa_per_play_off_L4_away")),
+            "home_epa_def": _safe_float(row.get("epa_per_play_def_L4_home")),
+            "away_epa_def": _safe_float(row.get("epa_per_play_def_L4_away")),
+            "home_cpoe": _safe_float(row.get("cpoe_L4_home")),
+            "away_cpoe": _safe_float(row.get("cpoe_L4_away")),
+        })
 
         # --- Total market signals ---
         open_total = opening.get("total", row["dk_total"])
@@ -684,11 +685,11 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         )
         total_conflict = _pick_conflicts_with_movement(total_pick_over, total_line_movement, "total")
 
-        # Only include total if edge exceeds the minimum threshold.
-        # TOTALS_MIN_EDGE is set high (10) until weather data is in the training set —
-        # model validation corr = -0.028 means no predictive power on totals right now.
-        if abs(total_edge) < TOTALS_MIN_EDGE:
-            continue  # skip this total bet, move to next game
+        # As with spreads, the row is always written so the total line stays
+        # visible; is_recommended records whether it clears TOTALS_MIN_EDGE.
+        # That gate is currently 999 — the totals model shows no edge on an
+        # honest backtest, and its EV curve is fitting noise in the tails — so
+        # no total is recommended, but the number is still there to look at.
 
         # For display: convert ou_surplus back to projected combined score
         # ou_surplus = combined_score - dk_total
@@ -696,6 +697,7 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         projected_total = round(float(row["model_total"]) + weather_adj + float(row["dk_total"]), 1)
 
         projections.append({
+            "is_recommended": bool(abs(total_edge) >= TOTALS_MIN_EDGE),
             "game_id": game_id,
             "season": int(row["season"]),
             "week": int(row["week"]),

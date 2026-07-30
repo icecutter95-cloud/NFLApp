@@ -1,4 +1,4 @@
-import { Zap, RefreshCw } from 'lucide-react'
+import { Zap, RefreshCw, Target } from 'lucide-react'
 
 export default function FilterBar({ filters, onChange }) {
   function set(key, val) {
@@ -68,6 +68,20 @@ export default function FilterBar({ filters, onChange }) {
         />
         <span className="text-gray-300 text-xs w-8">{filters.minEdge}+</span>
       </div>
+
+      {/* Recommended-only toggle. Off by default so the full slate and its
+          lines stay visible even when nothing clears the edge gate. */}
+      <button
+        onClick={() => set('recommendedOnly', !filters.recommendedOnly)}
+        className={`flex items-center gap-1 px-3 py-1 text-xs rounded border transition-colors ${
+          filters.recommendedOnly
+            ? 'border-green-500 text-green-400 bg-green-950'
+            : 'border-gray-700 text-gray-500 hover:border-gray-500'
+        }`}
+        title="Show only bets that clear the model's edge threshold"
+      >
+        <Target size={11} /> Bets only
+      </button>
 
       {/* Signal toggles */}
       <button

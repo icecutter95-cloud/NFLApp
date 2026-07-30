@@ -26,8 +26,15 @@ export default function EdgeRow({ projection: p, onBetLogged }) {
   const [expanded, setExpanded] = useState(false)
   const tier = TIER_CONFIG[p.confidence_tier] ?? TIER_CONFIG.watch
 
+  // Rows are written for every game so the slate and its lines stay visible,
+  // but only rows clearing the edge gate are actual recommendations. Anything
+  // else is informational and must not be dressed up like a pick — no tier
+  // badge, no green EV. Both models are gated off right now (no demonstrated
+  // edge), so today every row is informational.
+  const recommended = p.is_recommended === true
+
   const edgePositive = (p.edge_points ?? 0) > 0
-  const evPositive = (p.ev_pct ?? 0) > 0
+  const evPositive = (p.ev_pct ?? 0) > 0 && recommended
 
   const sideLabel = p.bet_type === 'total'
     ? p.side?.toUpperCase()
@@ -36,7 +43,9 @@ export default function EdgeRow({ projection: p, onBetLogged }) {
       : `${p.away_team} (A)`
 
   return (
-    <div className={`border-b border-gray-900 ${p.conflict_flag ? 'bg-red-950/20' : ''}`}>
+    <div className={`border-b border-gray-900 ${p.conflict_flag ? 'bg-red-950/20' : ''} ${
+      recommended ? '' : 'opacity-60'
+    }`}>
       {/* Main row */}
       <div
         className="grid grid-cols-[2fr_1fr_80px_1fr_80px_80px_80px_80px_100px_1fr] gap-2 px-4 py-3 items-center cursor-pointer hover:bg-gray-900/50 transition-colors text-sm"
@@ -76,7 +85,10 @@ export default function EdgeRow({ projection: p, onBetLogged }) {
         </div>
 
         {/* Edge */}
-        <div className={`text-xs tabular-nums font-medium ${edgePositive ? 'text-green-400' : 'text-red-400'}`}>
+        <div className={`text-xs tabular-nums font-medium ${
+          !recommended ? 'text-gray-500'
+            : edgePositive ? 'text-green-400' : 'text-red-400'
+        }`}>
           {edgePositive ? '+' : ''}{(p.edge_points ?? 0).toFixed(1)}
         </div>
 
@@ -85,11 +97,21 @@ export default function EdgeRow({ projection: p, onBetLogged }) {
           {evPositive ? '+' : ''}{((p.ev_pct ?? 0) * 100).toFixed(1)}%
         </div>
 
-        {/* Tier badge */}
+        {/* Tier badge — only for actual recommendations. A tier on an
+            informational row would read as a bet signal it isn't. */}
         <div>
-          <span className={`text-xs px-2 py-0.5 rounded border font-medium ${tier.className}`}>
-            {tier.label}
-          </span>
+          {recommended ? (
+            <span className={`text-xs px-2 py-0.5 rounded border font-medium ${tier.className}`}>
+              {tier.label}
+            </span>
+          ) : (
+            <span
+              className="text-xs px-2 py-0.5 rounded border border-gray-800 text-gray-600"
+              title="No bet — model shows no edge at the current threshold"
+            >
+              no bet
+            </span>
+          )}
         </div>
 
         {/* Signals */}

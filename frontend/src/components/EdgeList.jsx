@@ -1,6 +1,6 @@
 import EdgeRow from './EdgeRow'
 
-export default function EdgeList({ projections, loading, onBetLogged }) {
+export default function EdgeList({ projections, loading, onBetLogged, filters }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-48 text-gray-600 text-sm">
@@ -10,10 +10,26 @@ export default function EdgeList({ projections, loading, onBetLogged }) {
   }
 
   if (projections.length === 0) {
+    // Distinguish "filtered everything out" from "no data at all" -- with both
+    // models gated off, "Bets only" legitimately matches nothing, and that
+    // shouldn't look like a broken pipeline.
+    const filteredOut = filters?.recommendedOnly
     return (
       <div className="flex flex-col items-center justify-center h-48 text-gray-600 text-sm gap-2">
-        <span>No projections found</span>
-        <span className="text-xs text-gray-700">Run score_week.py to generate this week's projections</span>
+        {filteredOut ? (
+          <>
+            <span>No recommended bets this week</span>
+            <span className="text-xs text-gray-700 text-center max-w-md">
+              Neither model currently clears its edge threshold, so nothing is
+              flagged as a bet. Turn off “Bets only” to see the full slate and lines.
+            </span>
+          </>
+        ) : (
+          <>
+            <span>No projections found</span>
+            <span className="text-xs text-gray-700">Run score_week.py to generate this week's projections</span>
+          </>
+        )}
       </div>
     )
   }
