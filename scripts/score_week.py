@@ -193,6 +193,31 @@ def detect_rlm(public_pct: float | None, line_movement: float, market: str = "sp
 
 _NON_METRIC_COLS = {"id", "team", "season", "week", "updated_at"}
 
+# Travel helpers — kept in sync with build_dataset.add_travel_features.
+_TEAM_TZ = {
+    **{t: -5 for t in ["BUF","MIA","NE","NYJ","NYG","BAL","CIN","CLE","PIT",
+                       "JAX","IND","DET","WAS","PHI","CAR","TB","ATL"]},
+    **{t: -6 for t in ["CHI","GB","MIN","NO","DAL","HOU","KC","TEN"]},
+    **{t: -7 for t in ["DEN","ARI"]},
+    **{t: -8 for t in ["SEA","SF","LA","LAC","LV"]},
+}
+
+
+def _haversine_miles(lat1, lon1, lat2, lon2) -> float:
+    R = 3958.8
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dp, dl = np.radians(lat2 - lat1), np.radians(lon2 - lon1)
+    a = np.sin(dp / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2) ** 2
+    return float(2 * R * np.arcsin(np.sqrt(a)))
+
+
+def _stadium_coords(team: str, season: int):
+    try:
+        from fetch_historical_weather import get_stadium_coords
+        return get_stadium_coords(team, season)
+    except Exception:
+        return None
+
 
 def _fetch_in_season_metrics(season: int, week: int) -> pd.DataFrame:
     """Metrics going INTO `week` of `season`.
@@ -429,6 +454,48 @@ def fetch_weather(team_pairs: list) -> dict:
     return out
 
 
+def fetch_injury_aggregates() -> dict:
+    """Current injury counts per team, shaped like build_dataset's features.
+
+    Reads injury_flags (kept current by the refresh-injuries cron). Without
+    this, SPREAD_FEATURES' inj_* columns would be zero-filled at serve time
+    while the model was trained on real values — a silent train/serve skew of
+    exactly the kind that has bitten this pipeline repeatedly.
+    """
+    rows = _fetch_paged(lambda: supabase.table("injury_flags")
+                        .select("team, position, status"))
+    if not rows:
+        print("  Injuries: no rows in injury_flags — inj_* features will be 0")
+        return {}
+
+    OFF = {"QB", "RB", "FB", "WR", "TE", "T", "G", "C", "OL", "OT", "OG"}
+    DEF = {"DE", "DT", "NT", "LB", "ILB", "OLB", "MLB", "CB", "S", "FS", "SS", "DB", "DL"}
+
+    agg: dict = {}
+    for r in rows:
+        team = r.get("team")
+        if not team:
+            continue
+        pos = (r.get("position") or "").upper()
+        status = (r.get("status") or "").lower()
+        d = agg.setdefault(team, {"inj_qb_out": 0, "inj_out_off": 0,
+                                  "inj_out_def": 0, "inj_out_total": 0,
+                                  "inj_questionable": 0})
+        if status in ("out", "doubtful"):
+            d["inj_out_total"] += 1
+            if pos == "QB":
+                d["inj_qb_out"] = 1
+            if pos in OFF:
+                d["inj_out_off"] += 1
+            if pos in DEF:
+                d["inj_out_def"] += 1
+        elif status == "questionable":
+            d["inj_questionable"] += 1
+
+    print(f"  Injuries: aggregated for {len(agg)} teams")
+    return agg
+
+
 def fetch_public_betting(game_ids: list) -> dict:
     """Most recent public betting entry per game."""
     resp = (supabase.table("public_betting")
@@ -513,7 +580,7 @@ def _build_game_time(gameday, gametime) -> str | None:
 
 
 def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
-                         lines: dict, weather: dict) -> pd.DataFrame:
+                         lines: dict, weather: dict, injuries: dict | None = None) -> pd.DataFrame:
     """Build one feature row per game, ready to pass to the models."""
     metric_cols = [c for c in metrics.columns
                    if c not in ("id", "team", "season", "week", "updated_at")]
@@ -557,6 +624,23 @@ def build_feature_matrix(games: pd.DataFrame, metrics: pd.DataFrame,
         line_data = lines.get((game["home_team"], game["away_team"]), {})
         row["dk_spread"] = float(line_data.get("spread_home", 0) or 0)
         row["dk_total"] = float(line_data.get("total", 45) or 45)
+
+        # Travel / body clock — mirrors build_dataset.add_travel_features so
+        # training and serving compute these identically.
+        hc = _stadium_coords(game["home_team"], int(game["season"]))
+        ac = _stadium_coords(game["away_team"], int(game["season"]))
+        row["away_travel_miles"] = (
+            _haversine_miles(ac[0], ac[1], hc[0], hc[1]) if (hc and ac) else 0.0)
+        tzd = float(_TEAM_TZ.get(game["home_team"], -5) - _TEAM_TZ.get(game["away_team"], -5))
+        row["tz_delta"] = tzd
+        row["abs_tz_delta"] = abs(tzd)
+
+        inj = injuries or {}
+        for side, team in (("home", game["home_team"]), ("away", game["away_team"])):
+            d = inj.get(team, {})
+            for c in ("inj_qb_out", "inj_out_off", "inj_out_def",
+                      "inj_out_total", "inj_questionable"):
+                row[f"{c}_{side}"] = float(d.get(c, 0))
 
         w = weather.get((game["home_team"], game["away_team"]), {})
         row["wind_speed_mph"] = float(w.get("wind_speed_mph", 0) or 0)
@@ -765,7 +849,8 @@ def run_weekly_scoring(season: int, week: int):
     pub = fetch_public_betting(game_ids)
 
     # Build feature matrix
-    features = build_feature_matrix(games, metrics, lines, weather)
+    injuries = fetch_injury_aggregates()
+    features = build_feature_matrix(games, metrics, lines, weather, injuries)
 
     # Load models
     spread_model = joblib.load(MODELS_DIR / "spread_model.joblib")

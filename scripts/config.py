@@ -91,6 +91,23 @@ SPREAD_FEATURES = (
         "had_bye_home",
         "had_bye_away",
         "week_number",
+        # --- Tier 2 additions, each measured independently on held-out
+        # 2023-2025 (margin corr / MAE vs a 0.354 / 10.40 base):
+        #   travel            0.369 / 10.38   kept
+        #   injuries          0.370 / 10.39   kept
+        #   travel+injuries   0.374 / 10.38   kept (best)
+        #   trench metrics    0.356 / 10.50   REJECTED — corr flat, MAE worse
+        #   all three         0.365 / 10.49   worse than the pair: feature bloat
+        # Sack/QB-hit rates are still computed by compute_metrics.py so they can
+        # be re-tested, they are just not fed to the model.
+        "away_travel_miles",
+        "tz_delta",
+        "abs_tz_delta",
+        "inj_qb_out_home", "inj_qb_out_away",
+        "inj_out_off_home", "inj_out_off_away",
+        "inj_out_def_home", "inj_out_def_away",
+        "inj_out_total_home", "inj_out_total_away",
+        "inj_questionable_home", "inj_questionable_away",
         # NOTE: market_spread_home intentionally excluded.
         # Including the closing line as a feature creates a circular dependency:
         # edge = model_pred + closing_line, but model was trained ON the closing line,

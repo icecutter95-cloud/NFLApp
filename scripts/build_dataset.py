@@ -159,6 +159,139 @@ def add_closing_lines(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Travel / body-clock features
+# ---------------------------------------------------------------------------
+
+# Standard-time UTC offset of each team's home market. Used to measure how many
+# time zones the visiting team crossed -- a well-documented effect (a Pacific
+# team playing an early Eastern kickoff is on its body clock's early morning)
+# that our previous rest_diff / is_short_week flags did not capture at all.
+_TEAM_TZ = {
+    **{t: -5 for t in ["BUF","MIA","NE","NYJ","NYG","BAL","CIN","CLE","PIT",
+                       "JAX","IND","DET","WAS","PHI","CAR","TB","ATL"]},
+    **{t: -6 for t in ["CHI","GB","MIN","NO","DAL","HOU","KC","TEN"]},
+    **{t: -7 for t in ["DEN","ARI"]},
+    **{t: -8 for t in ["SEA","SF","LA","LAC","LV"]},
+}
+
+
+def _haversine_miles(lat1, lon1, lat2, lon2) -> float:
+    R = 3958.8
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dp, dl = np.radians(lat2 - lat1), np.radians(lon2 - lon1)
+    a = np.sin(dp / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2) ** 2
+    return float(2 * R * np.arcsin(np.sqrt(a)))
+
+
+def add_travel_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Distance flown by the visiting team and time zones crossed."""
+    try:
+        from fetch_historical_weather import STADIUM_COORDS, get_stadium_coords
+    except Exception:
+        print("  WARNING: stadium coords unavailable — skipping travel features")
+        df["away_travel_miles"] = 0.0
+        df["tz_delta"] = 0.0
+        df["abs_tz_delta"] = 0.0
+        return df
+
+    miles, tzd = [], []
+    for _, r in df.iterrows():
+        home, away, season = r["home_team"], r["away_team"], int(r["season"])
+        hc = get_stadium_coords(home, season)
+        ac = get_stadium_coords(away, season)
+        if hc and ac:
+            miles.append(_haversine_miles(ac[0], ac[1], hc[0], hc[1]))
+        else:
+            miles.append(0.0)
+        # positive = visitor moved east (loses hours off the body clock)
+        tzd.append(float(_TEAM_TZ.get(home, -5) - _TEAM_TZ.get(away, -5)))
+
+    df["away_travel_miles"] = miles
+    df["tz_delta"] = tzd
+    df["abs_tz_delta"] = np.abs(tzd)
+    print(f"  Travel: mean visitor distance {np.mean(miles):.0f} mi, "
+          f"{int((np.abs(tzd) >= 2).sum())} games crossing 2+ time zones")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Injury features
+# ---------------------------------------------------------------------------
+
+_OFF_POS = {"QB", "RB", "FB", "WR", "TE", "T", "G", "C", "OL", "OT", "OG"}
+_DEF_POS = {"DE", "DT", "NT", "LB", "ILB", "OLB", "MLB", "CB", "S", "FS", "SS", "DB", "DL"}
+_UNAVAILABLE = {"Out", "Doubtful"}
+
+
+def _load_injuries(seasons: list) -> pd.DataFrame:
+    """Weekly injury reports, cached locally.
+
+    NOT leakage: the injury report for week W is published before week W's
+    games, so it is legitimate pre-game information -- unlike the rolling
+    performance metrics, which must use only weeks strictly before W.
+    """
+    cache = DATA_DIR / "injuries_all.parquet"
+    if cache.exists():
+        return pd.read_parquet(cache)
+    try:
+        inj = nfl.import_injuries(seasons)
+        inj.to_parquet(cache, index=False)
+        print(f"  Cached {len(inj)} injury rows -> {cache.name}")
+        return inj
+    except Exception as exc:
+        print(f"  WARNING: could not load injuries: {exc}")
+        return pd.DataFrame()
+
+
+def _injury_team_week(seasons: list) -> pd.DataFrame:
+    inj = _load_injuries(seasons)
+    if inj.empty:
+        return pd.DataFrame()
+
+    inj = inj[inj.get("game_type", "REG") == "REG"].copy()
+    inj["status"] = inj["report_status"].fillna("")
+    inj["pos"] = inj["position"].fillna("")
+
+    unavailable = inj["status"].isin(_UNAVAILABLE)
+    inj["is_out"] = unavailable.astype(int)
+    inj["is_q"] = (inj["status"] == "Questionable").astype(int)
+    inj["qb_out"] = (unavailable & (inj["pos"] == "QB")).astype(int)
+    inj["off_out"] = (unavailable & inj["pos"].isin(_OFF_POS)).astype(int)
+    inj["def_out"] = (unavailable & inj["pos"].isin(_DEF_POS)).astype(int)
+
+    agg = (inj.groupby(["season", "week", "team"], as_index=False)
+           .agg(inj_qb_out=("qb_out", "max"),
+                inj_out_off=("off_out", "sum"),
+                inj_out_def=("def_out", "sum"),
+                inj_out_total=("is_out", "sum"),
+                inj_questionable=("is_q", "sum")))
+    return agg
+
+
+def add_injury_features(df: pd.DataFrame, seasons: list) -> pd.DataFrame:
+    agg = _injury_team_week(seasons)
+    cols = ["inj_qb_out", "inj_out_off", "inj_out_def", "inj_out_total", "inj_questionable"]
+    if agg.empty:
+        for side in ("home", "away"):
+            for c in cols:
+                df[f"{c}_{side}"] = 0.0
+        return df
+
+    for side, key in (("home", "home_team"), ("away", "away_team")):
+        renamed = agg.rename(columns={"team": key, **{c: f"{c}_{side}" for c in cols}})
+        df = df.merge(renamed, on=["season", "week", key], how="left")
+
+    for side in ("home", "away"):
+        for c in cols:
+            df[f"{c}_{side}"] = df[f"{c}_{side}"].fillna(0.0)
+
+    qb_games = int((df["inj_qb_out_home"] + df["inj_qb_out_away"]).gt(0).sum())
+    print(f"  Injuries: {qb_games} games with a QB listed out/doubtful; "
+          f"mean players out {df['inj_out_total_home'].mean():.1f}/team")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Weather features
 # ---------------------------------------------------------------------------
 
@@ -327,6 +460,12 @@ def main():
     # 5b. Weather features
     print("Adding weather features...")
     df = add_weather(df)
+
+    # 5c. Travel + injury features (Tier 2)
+    print("Adding travel features...")
+    df = add_travel_features(df)
+    print("Adding injury features...")
+    df = add_injury_features(df, ALL_HISTORICAL_SEASONS)
 
     # 6. Targets
     df = add_targets(df)

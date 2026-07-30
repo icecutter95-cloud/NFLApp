@@ -176,6 +176,44 @@ def compute_pace(pbp: pd.DataFrame) -> pd.DataFrame:
     return pace
 
 
+def compute_pressure(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Sack rate and QB-hit rate, both generated (defense) and allowed (offense).
+
+    Trench play is a strong, relatively stable team signal we previously had no
+    coverage of at all. Rates are per DROPBACK (qb_dropback), not per play, so
+    they aren't confounded by how pass-heavy a team is.
+    """
+    for c in ["qb_dropback", "sack", "qb_hit"]:
+        if c not in pbp.columns:
+            return pd.DataFrame()
+
+    db = pbp[pbp["qb_dropback"] == 1].copy()
+    db["sack"] = db["sack"].fillna(0)
+    db["qb_hit"] = db["qb_hit"].fillna(0)
+
+    off = (db.groupby(["game_id", "posteam", "season", "week"])
+           .agg(dropbacks=("qb_dropback", "count"),
+                sacks_allowed=("sack", "sum"),
+                hits_allowed=("qb_hit", "sum"))
+           .reset_index()
+           .rename(columns={"posteam": "team"}))
+    off["sack_rate_off"] = off["sacks_allowed"] / off["dropbacks"].clip(lower=1)
+    off["qb_hit_rate_off"] = off["hits_allowed"] / off["dropbacks"].clip(lower=1)
+
+    dfn = (db.groupby(["game_id", "defteam", "season", "week"])
+           .agg(dropbacks_faced=("qb_dropback", "count"),
+                sacks_made=("sack", "sum"),
+                hits_made=("qb_hit", "sum"))
+           .reset_index()
+           .rename(columns={"defteam": "team"}))
+    dfn["sack_rate_def"] = dfn["sacks_made"] / dfn["dropbacks_faced"].clip(lower=1)
+    dfn["qb_hit_rate_def"] = dfn["hits_made"] / dfn["dropbacks_faced"].clip(lower=1)
+
+    return (off[["game_id", "team", "season", "week", "sack_rate_off", "qb_hit_rate_off"]]
+            .merge(dfn[["game_id", "team", "season", "week", "sack_rate_def", "qb_hit_rate_def"]],
+                   on=["game_id", "team", "season", "week"], how="outer"))
+
+
 def compute_turnovers(pbp: pd.DataFrame) -> pd.DataFrame:
     """Turnover margin per team per game."""
     cols = ["game_id", "posteam", "defteam", "season", "week"]
@@ -248,6 +286,9 @@ METRIC_COLS = [
     "rz_td_pct_off",
     "plays_per_game",
     "turnover_margin",
+    # Trench play (per dropback) — previously no coverage at all
+    "sack_rate_off", "sack_rate_def",
+    "qb_hit_rate_off", "qb_hit_rate_def",
     # Scoring volume — critical for totals model
     "points_scored_off", "points_allowed_def",
 ]
@@ -397,6 +438,7 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
     rz = compute_redzone(pbp)
     pace = compute_pace(pbp)
     to = compute_turnovers(pbp)
+    press = compute_pressure(pbp)
     scoring = compute_scoring_from_schedule(season)
 
     game_level = (epa
@@ -405,6 +447,9 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
                   .merge(rz,      on=["game_id", "team", "season", "week"], how="left")
                   .merge(pace,    on=["game_id", "team", "season", "week"], how="left")
                   .merge(to,      on=["game_id", "team", "season", "week"], how="left"))
+
+    if not press.empty:
+        game_level = game_level.merge(press, on=["game_id", "team", "season", "week"], how="left")
 
     if not scoring.empty:
         game_level = game_level.merge(
