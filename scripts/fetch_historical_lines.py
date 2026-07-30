@@ -294,11 +294,17 @@ def main():
     if dry:
         return
 
-    allrows = pd.concat([f for f in frames if not f.empty], ignore_index=True) \
-        if any(not f.empty for f in frames) else pd.DataFrame()
+    # Combine EVERY cached season, not just the ones fetched in this run, so a
+    # chunked backfill (2020-2022 then 2024-2025) still produces a complete
+    # combined file instead of silently dropping the earlier seasons.
+    season_files = sorted(DATA_DIR.glob("historical_lines_[0-9][0-9][0-9][0-9].parquet"))
+    cached = [pd.read_parquet(f) for f in season_files]
+    allrows = pd.concat(cached, ignore_index=True) if cached else pd.DataFrame()
     if allrows.empty:
         print("\nNo rows collected.")
         return
+    print(f"\nCombining {len(season_files)} cached season(s): "
+          f"{[f.stem.split('_')[-1] for f in season_files]}")
 
     combined = DATA_DIR / "historical_lines_all.parquet"
     allrows.to_parquet(combined, index=False)
