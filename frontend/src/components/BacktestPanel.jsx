@@ -9,15 +9,36 @@ export default function BacktestPanel() {
   const [threshold, setThreshold] = useState(1.5)
 
   useEffect(() => {
-    supabase
-      .from('backtest_results')
-      .select('*')
-      .order('season')
-      .order('week')
-      .then(({ data: rows }) => {
-        setData(rows ?? [])
+    let cancelled = false
+
+    // Supabase caps a single response at 1000 rows. backtest_results holds
+    // ~1400 (3 seasons x 2 bet types), so an unpaginated .select('*') silently
+    // truncated the data -- and because rows are ordered by season, the entire
+    // shortfall landed on the most recent season: only 57 of 2025's 463 rows
+    // were reaching the UI, making 2025 look like ~20 bets instead of 170.
+    // Page through explicitly until a short page signals the end.
+    async function fetchAll() {
+      const PAGE = 1000
+      let all = []
+      for (let from = 0; ; from += PAGE) {
+        const { data: rows, error } = await supabase
+          .from('backtest_results')
+          .select('*')
+          .order('season')
+          .order('week')
+          .range(from, from + PAGE - 1)
+        if (error || !rows || rows.length === 0) break
+        all = all.concat(rows)
+        if (rows.length < PAGE) break
+      }
+      if (!cancelled) {
+        setData(all)
         setLoading(false)
-      })
+      }
+    }
+
+    fetchAll()
+    return () => { cancelled = true }
   }, [])
 
   const filtered = useMemo(() =>
