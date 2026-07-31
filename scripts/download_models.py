@@ -25,7 +25,8 @@ REQUIRED_MODEL_FILES = ["spread_model.joblib", "total_model.joblib"]
 # Calibration files are optional — score_week.py falls back to the old guessed
 # linear EV formula if they're missing, so a missing calibration file should
 # warn, not crash the whole run the way a missing prediction model must.
-OPTIONAL_MODEL_FILES = ["spread_calibration.joblib", "total_calibration.joblib"]
+OPTIONAL_MODEL_FILES = ["spread_calibration.joblib", "total_calibration.joblib",
+                        "movement_model.joblib", "movement_features.joblib"]
 
 for filename in REQUIRED_MODEL_FILES:
     print(f"Downloading {filename}...")

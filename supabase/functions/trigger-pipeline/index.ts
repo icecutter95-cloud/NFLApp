@@ -9,6 +9,7 @@
  * Request body:
  *   { action: 'score-week',     season: number, week: number }
  *   { action: 'update-metrics', season: number }
+ *   { action: 'log-clv',        season?: number, week?: number }  // blank = auto-detect
  */
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
@@ -35,10 +36,24 @@ serve(async (req) => {
       )
     }
 
-    const workflow = action === 'update-metrics' ? 'update-metrics.yml' : 'score-week.yml'
-    const inputs   = action === 'update-metrics'
-      ? { season: String(season) }
-      : { season: String(season), week: String(week) }
+    // Route the action to its workflow. log-clv takes optional inputs -- blank
+    // means the script auto-detects the current season/week, which is what the
+    // daily cron wants.
+    const WORKFLOWS: Record<string, string> = {
+      'update-metrics': 'update-metrics.yml',
+      'log-clv':        'log-clv.yml',
+      'score-week':     'score-week.yml',
+    }
+    const workflow = WORKFLOWS[action] ?? 'score-week.yml'
+
+    let inputs: Record<string, string>
+    if (action === 'update-metrics') {
+      inputs = { season: String(season) }
+    } else if (action === 'log-clv') {
+      inputs = { season: season ? String(season) : '', week: week ? String(week) : '' }
+    } else {
+      inputs = { season: String(season), week: String(week) }
+    }
 
     const ghRes = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,

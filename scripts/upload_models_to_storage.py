@@ -30,6 +30,8 @@ except Exception:
 MODEL_FILES = [
     "spread_model.joblib", "total_model.joblib",
     "spread_calibration.joblib", "total_calibration.joblib",
+    # Line-movement model + its exact feature order (CLV tracking).
+    "movement_model.joblib", "movement_features.joblib",
 ]
 
 for filename in MODEL_FILES:

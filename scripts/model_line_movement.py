@@ -39,6 +39,7 @@ Usage:
     python model_line_movement.py
 """
 
+import sys
 import warnings
 import numpy as np
 import pandas as pd
@@ -110,6 +111,31 @@ def show(rows: list, title: str):
               f"{r['w']:>5}-{r['l']:<5}{r['wr']:>6.1f}%{r['roi']:>+7.1f}%")
 
 
+def train_and_save_production(df: pd.DataFrame):
+    """Train on every season with line coverage and persist for live use.
+
+    Evaluation already happened on strict splits above; the shipped artifact is
+    trained on all available data because more history is better once the
+    methodology is settled. Same pattern as the spread/total models.
+    """
+    import joblib
+    from config import MODELS_DIR
+
+    feats = [c for c in SPREAD_FEATURES if c in df.columns] + ["week_open_spread_home"]
+    fit = df.dropna(subset=["week_spread_movement"])
+    model = train_model(fit[feats], fit["week_spread_movement"], fit, "movement_production")
+
+    path = MODELS_DIR / "movement_model.joblib"
+    joblib.dump(model, path)
+    # Persist the feature order too: the live scorer must build columns in
+    # exactly this order, and silently mismatched columns is the failure mode
+    # this pipeline has hit three times.
+    joblib.dump(feats, MODELS_DIR / "movement_features.joblib")
+    print(f"\nProduction movement model trained on {len(fit)} games "
+          f"({sorted(fit.season.unique())})")
+    print(f"  saved -> {path.name} ({len(feats)} features)")
+
+
 def main():
     df = load_joined()
     print(f"joined games with line data: {len(df)}")
@@ -149,6 +175,9 @@ def main():
                      ev[OPENER].values[s], ev["home_margin"].values[s])
         print(f"    |pred|>={thr:<4} n={int(s.sum()):>3}  CLV {r['clv']:+.2f} pts  "
               f"CLV+ {r['clv_pos']*100:.0f}%  {r['w']}-{r['l']} = {r['wr']:.1f}%  ROI {r['roi']:+.1f}%")
+
+    if "--save" in sys.argv:
+        train_and_save_production(df)
 
 
 if __name__ == "__main__":
