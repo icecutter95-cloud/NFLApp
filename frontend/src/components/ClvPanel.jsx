@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { TrendingUp, TrendingDown, Minus, Info, Target, AlertTriangle } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Info, Target, AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 // This view tracks the LINE MOVEMENT model, which is a different question from
@@ -42,6 +42,35 @@ function fmtNum(v) {
   return v == null ? '—' : v.toFixed(1)
 }
 
+// American odds always carry an explicit sign.
+function fmtPrice(v) {
+  return v == null ? '' : v > 0 ? `+${v}` : `${v}`
+}
+
+const BOOK_NAMES = {
+  draftkings: 'DraftKings', fanduel: 'FanDuel', betmgm: 'BetMGM',
+  williamhill_us: 'Caesars', betrivers: 'BetRivers', espnbet: 'ESPN Bet',
+  betonlineag: 'BetOnline', lowvig: 'LowVig', bovada: 'Bovada',
+  pinnacle: 'Pinnacle',
+}
+const bookName = k => BOOK_NAMES[k] ?? k
+
+// The best number available right now for the side we are on, pulled from
+// best_book_lines. Shopping is worth ~+0.30 pts a bet — about 15% on top of
+// the qualifying filter's +1.93 CLV — so the headline row shows where to bet,
+// not just what DraftKings says.
+function bestFor(row, books) {
+  if (!books) return null
+  const m = {
+    home:  ['home_book', 'home_line', 'home_price'],
+    away:  ['away_book', 'away_line', 'away_price'],
+    over:  ['over_book', 'over_line', 'over_price'],
+    under: ['under_book', 'under_line', 'under_price'],
+  }[row.predicted_side]
+  if (!m || books[m[0]] == null) return null
+  return { book: books[m[0]], line: books[m[1]], price: books[m[2]] }
+}
+
 function Stat({ label, value, sub, color }) {
   return (
     <div className="bg-gray-900 rounded border border-gray-800 p-3">
@@ -80,12 +109,175 @@ function TotalsCaveat() {
   )
 }
 
+function Field({ label, value, color, title }) {
+  return (
+    <div title={title}>
+      <div className="text-[10px] text-gray-600 uppercase tracking-wider">{label}</div>
+      <div className={`text-xs tabular-nums ${color ?? 'text-gray-200'}`}>{value}</div>
+    </div>
+  )
+}
+
+// Everything we know about one line, opened up: how the model got here, where
+// the number has travelled, and what every book is currently offering.
+function RowDetail({ row, books, quotes, loading }) {
+  const isTotal = row.bet_type === 'total'
+  const fmt = isTotal ? fmtNum : fmtLine
+  const side = row.predicted_side
+  const best = bestFor(row, books)
+
+  // Which column of the book table is the side we are actually on.
+  const rank = q => {
+    if (!isTotal) return side === 'home' ? q.spread_home : -q.spread_home
+    return side === 'over' ? -q.total : q.total
+  }
+  const sorted = [...(quotes ?? [])].sort((a, b) => (rank(b) ?? -99) - (rank(a) ?? -99))
+  const dk = (quotes ?? []).find(q => q.book === 'draftkings')
+  const dkLine = dk ? (isTotal ? dk.total : (side === 'away' ? -dk.spread_home : dk.spread_home)) : null
+  const dkPrice = dk ? ({ home: dk.spread_home_price, away: dk.spread_away_price,
+                          over: dk.over_price, under: dk.under_price })[side] : null
+
+  // Points first, but a better PRICE on the same number is real value too:
+  // -105 pays more than -110 on an identical bet. In American odds the larger
+  // number is always the better payout, on either side of zero.
+  let shopping = null
+  if (best && dkLine != null) {
+    const pts = isTotal && side === 'over' ? dkLine - best.line : best.line - dkLine
+    if (pts > 0) shopping = { good: true, text: `+${pts.toFixed(1)} pts` }
+    else if (pts === 0 && best.price != null && dkPrice != null && best.price > dkPrice)
+      shopping = { good: true, text: `same number, better price (${fmtPrice(best.price)} vs ${fmtPrice(dkPrice)})` }
+    else shopping = { good: false, text: 'DraftKings is already the best' }
+  }
+
+  return (
+    <div className="px-4 py-4 bg-gray-950/60 border-t border-gray-800/70 space-y-4">
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <Field label="Opened" value={fmt(row.open_line)} />
+        <Field label="Projected close" value={fmt(row.projected_close)}
+               title="Where the movement model expects the number to settle" />
+        <Field label="Current close" value={fmt(row.closing_line)} />
+        <Field
+          label="Moved so far"
+          value={row.actual_movement == null ? 'no move yet' : fmtLine(row.actual_movement)}
+          color={row.actual_movement ? 'text-gray-200' : 'text-gray-500'}
+        />
+        <Field
+          label="CLV"
+          value={row.clv_points == null ? 'pending' : `${row.clv_points >= 0 ? '+' : ''}${row.clv_points.toFixed(2)}`}
+          color={row.clv_points == null ? 'text-gray-500'
+                 : row.clv_points > 0 ? 'text-green-400' : row.clv_points < 0 ? 'text-red-400' : 'text-gray-300'}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 border-t border-gray-800/50">
+        <Field label="Predicted move" value={fmtLine(row.predicted_movement)} />
+        {!isTotal && (
+          <Field
+            label="Margin disagreement"
+            value={row.margin_disagreement == null ? '—' : fmtLine(row.margin_disagreement)}
+            title="How far the margin model sits from what the opener implies. Positive favours home."
+          />
+        )}
+        <Field label="Direction so far"
+               value={row.direction_correct == null ? 'no move yet' : row.direction_correct ? 'right' : 'wrong'}
+               color={row.direction_correct == null ? 'text-gray-500'
+                      : row.direction_correct ? 'text-green-400' : 'text-red-400'} />
+        <Field
+          label="Qualifies"
+          value={row.qualifies ? 'yes' : 'no'}
+          color={row.qualifies ? 'text-green-400' : 'text-gray-500'}
+          title={isTotal
+            ? 'Totals need 1.25+ pts of predicted movement — one signal only'
+            : 'Spreads need 3+ pts of margin disagreement AND 0.5+ pts of predicted drift the same way'}
+        />
+      </div>
+
+      <div>
+        <div className="flex items-baseline justify-between mb-2">
+          <span className="text-[10px] text-gray-500 uppercase tracking-wider">
+            Every book — {isTotal ? (side === 'over' ? 'best over is the lowest number' : 'best under is the highest number')
+                                  : 'best is the most points'}
+          </span>
+          {shopping && (
+            <span className="text-[10px] text-gray-500">
+              shopping vs DraftKings:{' '}
+              <span className={shopping.good ? 'text-green-400' : 'text-gray-500'}>
+                {shopping.text}
+              </span>
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <div className="text-xs text-gray-600 py-2">Loading books…</div>
+        ) : sorted.length === 0 ? (
+          <div className="text-xs text-gray-600 py-2">
+            No book quotes stored for this game yet — they arrive with the next odds refresh.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[420px]">
+              <thead>
+                <tr className="text-gray-600 border-b border-gray-800">
+                  <th className="text-left pb-1.5 font-normal">Book</th>
+                  <th className="text-right pb-1.5 font-normal">Spread (home)</th>
+                  <th className="text-right pb-1.5 font-normal">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/40">
+                {sorted.map(q => {
+                  const isBest = best && q.book === best.book
+                  return (
+                    <tr key={q.book} className={isBest ? 'bg-green-950/25' : ''}>
+                      <td className="py-1.5">
+                        <span className={isBest ? 'text-green-300 font-medium' : 'text-gray-300'}>
+                          {bookName(q.book)}
+                        </span>
+                        {isBest && <span className="text-green-500 text-[10px] ml-1.5">← best</span>}
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums text-gray-300">
+                        {q.spread_home == null ? '—' : (
+                          <>
+                            {fmtLine(q.spread_home)}
+                            <span className="text-gray-600 ml-1">
+                              {fmtPrice(side === 'away' ? q.spread_away_price : q.spread_home_price)}
+                            </span>
+                          </>
+                        )}
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums text-gray-300">
+                        {q.total == null ? '—' : (
+                          <>
+                            {fmtNum(q.total)}
+                            <span className="text-gray-600 ml-1">
+                              {fmtPrice(side === 'under' ? q.under_price : q.over_price)}
+                            </span>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function ClvPanel({ season }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [qualifyingOnly, setQualifyingOnly] = useState(false)
   const [tab, setTab] = useState('all')
   const [sort, setSort] = useState('time')
+  const [best, setBest] = useState({})        // "AWAY@HOME" -> best_book_lines row
+  const [expanded, setExpanded] = useState(null)
+  const [quotes, setQuotes] = useState({})    // "AWAY@HOME" -> every book's quote
+  const [loadingQuotes, setLoadingQuotes] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -104,11 +296,31 @@ export default function ClvPanel({ season }) {
         all = all.concat(data)
         if (data.length < PAGE) break
       }
-      if (!cancelled) { setRows(all); setLoading(false) }
+      // Best available number per game. Keyed on the team pair because the
+      // Odds API's event ids are not stable, so line_predictions falls back to
+      // a synthetic id that would never match.
+      const { data: bb } = await supabase.from('best_book_lines').select('*')
+      const byPair = {}
+      for (const b of bb ?? []) byPair[`${b.away_team}@${b.home_team}`] = b
+
+      if (!cancelled) { setRows(all); setBest(byPair); setLoading(false) }
     }
     load()
     return () => { cancelled = true }
   }, [season])
+
+  // Full book panel is fetched lazily — only the game being opened.
+  async function toggle(key, row) {
+    if (expanded === key) { setExpanded(null); return }
+    setExpanded(key)
+    const pair = `${row.away_team}@${row.home_team}`
+    if (quotes[pair]) return
+    setLoadingQuotes(true)
+    const { data } = await supabase.from('book_lines').select('*')
+      .eq('home_team', row.home_team).eq('away_team', row.away_team)
+    setQuotes(q => ({ ...q, [pair]: data ?? [] }))
+    setLoadingQuotes(false)
+  }
 
   const inTab = useMemo(
     () => (tab === 'all' ? rows : rows.filter(r => r.bet_type === tab)),
@@ -163,6 +375,8 @@ export default function ClvPanel({ season }) {
           A prediction is frozen the first time a game appears, and <span className="text-gray-300">CLV</span> measures
           how much better that number is than the eventual close. Positive CLV means you hold a better price than
           the market's final answer — the fastest honest read on whether the model works.
+          {' '}<span className="text-gray-400">Take</span> shows the best number and price on the board right
+          now, across every book — worth about +0.30 pts a bet on its own. Click any row for the full panel.
         </span>
       </div>
 
@@ -275,16 +489,25 @@ export default function ClvPanel({ season }) {
             const side = isTotal
               ? (r.predicted_side === 'over' ? 'Over' : 'Under')
               : (r.predicted_side === 'home' ? r.home_team : r.away_team)
+            const pair = `${r.away_team}@${r.home_team}`
+            const key = `${r.game_id}_${r.bet_type}`
+            const bb = bestFor(r, best[pair])
+            const isOpen = expanded === key
             return (
-              <div key={`${r.game_id}_${r.bet_type}`}
-                   className={`grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center hover:bg-gray-800/30 ${
-                     r.qualifies
-                       ? isTotal
-                         ? 'bg-amber-950/20 border-l-2 border-l-amber-600'
-                         : 'bg-green-950/20 border-l-2 border-l-green-600'
-                       : ''
-                   }`}>
-                <div>
+              <div key={key} className={
+                r.qualifies
+                  ? isTotal
+                    ? 'bg-amber-950/20 border-l-2 border-l-amber-600'
+                    : 'bg-green-950/20 border-l-2 border-l-green-600'
+                  : ''
+              }>
+              <div role="button" tabIndex={0}
+                   onClick={() => toggle(key, r)}
+                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(key, r) } }}
+                   className={`grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center cursor-pointer hover:bg-gray-800/30`}>
+                <div className="flex items-center gap-1">
+                  {isOpen ? <ChevronDown size={12} className="text-gray-500 shrink-0" />
+                          : <ChevronRight size={12} className="text-gray-600 shrink-0" />}
                   <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider ${
                     isTotal ? 'bg-amber-950 text-amber-500' : 'bg-gray-800 text-gray-400'
                   }`}>
@@ -305,13 +528,27 @@ export default function ClvPanel({ season }) {
                     ({fmtLine(r.predicted_movement)})
                   </span>
                 </div>
-                <div className="text-right text-xs">
-                  <span className={
-                    r.qualifies
-                      ? isTotal ? 'text-amber-300 font-semibold' : 'text-green-300 font-semibold'
-                      : 'text-gray-200 font-medium'
-                  }>{side}</span>
-                  <span className="text-gray-500 ml-1 tabular-nums">{fmt(r.taken_line)}</span>
+                {/* Best number on the board right now, not DraftKings' —
+                    shopping is worth ~+0.30 pts a bet and this is where it
+                    gets captured. Falls back to the frozen line if no book
+                    quotes have arrived yet. */}
+                <div className="text-right text-xs leading-tight">
+                  <div>
+                    <span className={
+                      r.qualifies
+                        ? isTotal ? 'text-amber-300 font-semibold' : 'text-green-300 font-semibold'
+                        : 'text-gray-200 font-medium'
+                    }>{side}</span>
+                    <span className="text-gray-300 ml-1 tabular-nums">
+                      {bb ? fmt(bb.line) : fmt(r.taken_line)}
+                    </span>
+                    {bb?.price != null && (
+                      <span className="text-gray-500 ml-1 tabular-nums">{fmtPrice(bb.price)}</span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-gray-600 truncate">
+                    {bb ? bookName(bb.book) : 'no book quotes yet'}
+                  </div>
                 </div>
                 <div className="text-right text-gray-400 text-xs tabular-nums">{fmt(r.closing_line)}</div>
                 <div className="text-right text-xs tabular-nums text-gray-400">
@@ -338,6 +575,11 @@ export default function ClvPanel({ season }) {
                         : r.result === 'loss' ? 'text-red-400' : 'text-gray-400'
                       }>{r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'Push'}</span>}
                 </div>
+              </div>
+              {isOpen && (
+                <RowDetail row={r} books={best[pair]} quotes={quotes[pair]}
+                           loading={loadingQuotes && !quotes[pair]} />
+              )}
               </div>
             )
           })}
