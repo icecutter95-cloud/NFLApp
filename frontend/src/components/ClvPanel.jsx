@@ -22,6 +22,15 @@ const TABS = [
   { key: 'total',  label: 'Totals' },
 ]
 
+// Conviction sorts on the ABSOLUTE predicted move: a 2-point drop toward the
+// home team and a 2-point drift toward the away team are equally strong reads,
+// they just point opposite ways.
+const SORTS = {
+  time:     { label: 'Game time', fn: (a, b) => new Date(a.commence_time) - new Date(b.commence_time) },
+  movement: { label: 'Proj. move', fn: (a, b) => Math.abs(b.predicted_movement ?? 0) - Math.abs(a.predicted_movement ?? 0) },
+  clv:      { label: 'CLV', fn: (a, b) => (b.clv_points ?? -Infinity) - (a.clv_points ?? -Infinity) },
+}
+
 function fmtLine(v) {
   if (v == null) return '—'
   return v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1)
@@ -76,6 +85,7 @@ export default function ClvPanel({ season }) {
   const [loading, setLoading] = useState(true)
   const [qualifyingOnly, setQualifyingOnly] = useState(false)
   const [tab, setTab] = useState('all')
+  const [sort, setSort] = useState('time')
 
   useEffect(() => {
     let cancelled = false
@@ -138,9 +148,10 @@ export default function ClvPanel({ season }) {
     )
   }
 
-  const visible = qualifyingOnly ? inTab.filter(r => r.qualifies) : inTab
+  const visible = [...(qualifyingOnly ? inTab.filter(r => r.qualifies) : inTab)]
+    .sort(SORTS[sort].fn)
   const showTotalsCaveat = tab !== 'spread'
-  const GRID = 'grid-cols-[52px_1.5fr_70px_80px_100px_80px_90px_80px_60px]'
+  const GRID = 'grid-cols-[52px_1.4fr_70px_110px_100px_80px_90px_80px_60px]'
 
   return (
     <div className="p-4 space-y-5 max-w-6xl mx-auto">
@@ -214,6 +225,24 @@ export default function ClvPanel({ season }) {
         >
           <Target size={12} /> Qualifying only
         </button>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="text-xs text-gray-600 mr-0.5">Sort</span>
+          {Object.entries(SORTS).map(([key, s]) => (
+            <button
+              key={key}
+              onClick={() => setSort(key)}
+              className={`px-2 py-1.5 text-xs rounded border transition-colors ${
+                sort === key
+                  ? 'border-gray-500 text-gray-200 bg-gray-800'
+                  : 'border-gray-800 text-gray-600 hover:border-gray-600'
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
         <span className="text-xs text-gray-600 leading-relaxed">
           <span className="text-gray-400">Spread</span> qualifies when the margin model disagrees with the opener
           by 3+ pts AND the movement model expects 0.5+ pts of drift the same way — 61.5% / 60.0% across the two
@@ -228,7 +257,7 @@ export default function ClvPanel({ season }) {
           <span>Type</span>
           <span>Game</span>
           <span className="text-right">Opened</span>
-          <span className="text-right">We project</span>
+          <span className="text-right">We project (move)</span>
           <span className="text-right">Take</span>
           <span className="text-right">Current</span>
           <span className="text-right">Moved</span>
@@ -269,7 +298,12 @@ export default function ClvPanel({ season }) {
                   <span className="text-gray-600 text-xs ml-2">Wk {r.week}</span>
                 </div>
                 <div className="text-right text-gray-400 text-xs tabular-nums">{fmt(r.open_line)}</div>
-                <div className="text-right text-gray-300 text-xs tabular-nums">{fmt(r.projected_close)}</div>
+                <div className="text-right text-xs tabular-nums">
+                  <span className="text-gray-300">{fmt(r.projected_close)}</span>
+                  <span className={`ml-1.5 ${sort === 'movement' ? 'text-gray-300' : 'text-gray-600'}`}>
+                    ({fmtLine(r.predicted_movement)})
+                  </span>
+                </div>
                 <div className="text-right text-xs">
                   <span className={
                     r.qualifies
