@@ -73,7 +73,19 @@ _TEAM_METRIC_COLS = [
     "third_down_conv_off_season", "third_down_stop_def_season",
     "rz_td_pct_off_season",
     "plays_per_game_L4",
-    "turnover_margin_L8",
+    # turnover_margin_L8 REMOVED -- it was actively harmful. Prompted by Action
+    # Network's "luck rankings" idea, we measured whether turnover margin is
+    # repeatable at all: first-half-of-season to second-half correlation is only
+    # r=0.196, i.e. ~4% of the variance carries over. Stripping fumble-recovery
+    # luck (expected_turnover_margin, still computed in compute_metrics.py) did
+    # NOT help either -- r=0.193, essentially unchanged, because interceptions
+    # dominate the margin and were left untouched.
+    # Held-out 2023-2025 margin prediction:
+    #   raw turnover_margin        corr 0.374 / MAE 10.38
+    #   expected instead of raw    corr 0.371 / MAE 10.40
+    #   expected + luck signal     corr 0.366 / MAE 10.41
+    #   DROPPED ENTIRELY           corr 0.383 / MAE 10.36   <- best
+    # The feature was contributing noise the model was fitting to.
     # Scoring volume — key for totals model
     "points_scored_off_L4", "points_scored_off_L8",
     "points_allowed_def_L4", "points_allowed_def_L8",

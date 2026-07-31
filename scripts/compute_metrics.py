@@ -214,6 +214,65 @@ def compute_pressure(pbp: pd.DataFrame) -> pd.DataFrame:
                    on=["game_id", "team", "season", "week"], how="outer"))
 
 
+def compute_expected_turnovers(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Turnover margin with fumble-recovery LUCK stripped out.
+
+    How often a team fumbles (and how often its defense forces fumbles) is a
+    repeatable team trait. WHO FALLS ON THE BALL is close to a coin flip -- in
+    2024, offenses retained 57% of 663 fumbles. Raw turnover margin therefore
+    mixes a real signal with a large amount of noise, and `turnover_margin` has
+    been a model feature all along.
+
+    So instead of counting fumbles actually lost, we count fumbles OCCURRED and
+    multiply by the league-wide loss rate:
+
+        expected_committed = own_fumbles   * league_loss_rate + interceptions_thrown
+        expected_forced    = forced_fumbles * league_loss_rate + interceptions_made
+
+    Interceptions are left as-is: they carry far more skill (pressure, coverage,
+    ball skills) than fumble recoveries, though they are not noise-free either.
+
+    Also emits `turnover_luck` = actual - expected, which is itself a
+    regression signal: a team well above its expected margin has been getting
+    bounces it should not count on repeating.
+
+    The league loss rate is a single leaguewide constant (~0.43) computed over
+    hundreds of fumbles, so deriving it within-season carries no meaningful
+    team-level leakage.
+    """
+    needed = ["fumble", "fumble_lost", "interception", "posteam", "defteam"]
+    if any(c not in pbp.columns for c in needed):
+        return pd.DataFrame()
+
+    fum = pbp[pbp["fumble"] == 1]
+    if fum.empty:
+        return pd.DataFrame()
+    league_loss_rate = float(fum["fumble_lost"].sum() / len(fum))
+
+    keys = ["game_id", "season", "week"]
+
+    off_fum = (fum.groupby(keys + ["posteam"]).size()
+               .reset_index(name="own_fumbles").rename(columns={"posteam": "team"}))
+    def_fum = (fum.groupby(keys + ["defteam"]).size()
+               .reset_index(name="forced_fumbles").rename(columns={"defteam": "team"}))
+
+    ints = pbp[pbp["interception"] == 1]
+    int_thrown = (ints.groupby(keys + ["posteam"]).size()
+                  .reset_index(name="ints_thrown").rename(columns={"posteam": "team"}))
+    int_made = (ints.groupby(keys + ["defteam"]).size()
+                .reset_index(name="ints_made").rename(columns={"defteam": "team"}))
+
+    out = off_fum
+    for frame in (def_fum, int_thrown, int_made):
+        out = out.merge(frame, on=keys + ["team"], how="outer")
+    out = out.fillna(0)
+
+    out["exp_to_committed"] = out["own_fumbles"] * league_loss_rate + out["ints_thrown"]
+    out["exp_to_forced"] = out["forced_fumbles"] * league_loss_rate + out["ints_made"]
+    out["expected_turnover_margin"] = out["exp_to_forced"] - out["exp_to_committed"]
+    return out[keys + ["team", "expected_turnover_margin"]]
+
+
 def compute_turnovers(pbp: pd.DataFrame) -> pd.DataFrame:
     """Turnover margin per team per game."""
     cols = ["game_id", "posteam", "defteam", "season", "week"]
@@ -350,6 +409,7 @@ METRIC_COLS = [
     "rz_td_pct_off",
     "plays_per_game",
     "turnover_margin",
+    "expected_turnover_margin", "turnover_luck",
     # Trench play (per dropback) — previously no coverage at all
     "sack_rate_off", "sack_rate_def",
     "qb_hit_rate_off", "qb_hit_rate_def",
@@ -506,6 +566,7 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
     rz = compute_redzone(pbp)
     pace = compute_pace(pbp)
     to = compute_turnovers(pbp)
+    exp_to = compute_expected_turnovers(pbp)
     press = compute_pressure(pbp)
     ngs = compute_ngs(season)
     scoring = compute_scoring_from_schedule(season)
@@ -519,6 +580,13 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
 
     if not press.empty:
         game_level = game_level.merge(press, on=["game_id", "team", "season", "week"], how="left")
+
+    if not exp_to.empty:
+        game_level = game_level.merge(exp_to, on=["game_id", "team", "season", "week"], how="left")
+        # Luck = what you got minus what you deserved. Positive means bounces
+        # went your way and should not be projected forward.
+        game_level["turnover_luck"] = (
+            game_level["turnover_margin"] - game_level["expected_turnover_margin"])
 
     # NGS is keyed team-week (one game per team per week), not game_id.
     if not ngs.empty:
