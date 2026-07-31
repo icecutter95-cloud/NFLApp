@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap } from 'lucide-react'
+import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap, LineChart } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 export default function Header({
@@ -181,7 +181,9 @@ export default function Header({
 
         <span className="text-gray-800 text-xs">|</span>
 
-        {/* View nav */}
+        {/* View nav — CLV first: it is the live, evidence-backed measurement.
+            Edges shows the ATS model, whose picks are currently gated off. */}
+        {navBtn('clv',         <LineChart size={12} />,     'CLV')}
         {navBtn('edges',       null,                        'Edges')}
         {navBtn('performance', <BarChart2 size={12} />,    'Performance')}
         {navBtn('backtest',    <FlaskConical size={12} />, 'Backtest')}
