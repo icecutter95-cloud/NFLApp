@@ -18,8 +18,16 @@ on:
         required: false
         default: ''
   schedule:
-    # 12:30 UTC daily — 30 min after refresh-odds, so the board is fresh.
-    - cron: '30 12 * * *'
+    # Every 3 hours. This used to run once daily, which was actively costly:
+    # a pick is worth ~+1.55 CLV inside the first 6 hours and roughly nothing
+    # after 3 days (see scripts/screen_bet_timing.py), so a board that posted
+    # just after a daily run could be up to 24h stale before it was ever
+    # visible — most of the edge, gone before anyone saw the bet.
+    #
+    # refresh-odds already runs every 15 min during game week, so the logger
+    # was the bottleneck. At 3h the frozen number is at worst 3 hours behind
+    # the true opener, comfortably inside the best bucket.
+    - cron: '30 */3 * * *'
 
 jobs:
   log-clv:

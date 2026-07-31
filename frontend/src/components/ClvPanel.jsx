@@ -47,6 +47,31 @@ function fmtPrice(v) {
   return v == null ? '' : v > 0 ? `+${v}` : `${v}`
 }
 
+// How stale a pick is, and what that historically cost. Measured in
+// scripts/screen_bet_timing.py on qualifying spreads: CLV runs +1.55 inside the
+// first 6 hours and is GONE by 3 days (-0.05, positive only 15% of the time).
+// Paired on the same game, early beats late by +1.46 pts at t=7.0 — the
+// strongest effect in this project, stronger than the win rate itself.
+const FRESHNESS = [
+  { max: 6,   label: 'fresh',  cls: 'text-green-400',  note: '+1.55 CLV historically, 70% positive' },
+  { max: 24,  label: 'fading', cls: 'text-yellow-500', note: '+0.86 CLV historically, 59% positive' },
+  { max: 72,  label: 'late',   cls: 'text-orange-500', note: '+0.42 CLV historically, 43% positive' },
+  { max: 1e9, label: 'dead',   cls: 'text-red-500',    note: '-0.05 CLV historically — the edge is gone' },
+]
+
+function pickAge(row, now) {
+  if (!row.predicted_at) return null
+  // Once a game kicks off, age is meaningless — it is no longer bettable.
+  if (row.commence_time && new Date(row.commence_time) < now) return null
+  const hrs = (now - new Date(row.predicted_at)) / 36e5
+  if (hrs < 0) return null
+  const tier = FRESHNESS.find(f => hrs < f.max)
+  const text = hrs < 1 ? `${Math.round(hrs * 60)}m`
+             : hrs < 48 ? `${Math.round(hrs)}h`
+             : `${Math.round(hrs / 24)}d`
+  return { hrs, text, ...tier }
+}
+
 const BOOK_NAMES = {
   draftkings: 'DraftKings', fanduel: 'FanDuel', betmgm: 'BetMGM',
   williamhill_us: 'Caesars', betrivers: 'BetRivers', espnbet: 'ESPN Bet',
@@ -120,7 +145,7 @@ function Field({ label, value, color, title }) {
 
 // Everything we know about one line, opened up: how the model got here, where
 // the number has travelled, and what every book is currently offering.
-function RowDetail({ row, books, quotes, loading }) {
+function RowDetail({ row, books, quotes, loading, age }) {
   const isTotal = row.bet_type === 'total'
   const fmt = isTotal ? fmtNum : fmtLine
   const side = row.predicted_side
@@ -151,6 +176,14 @@ function RowDetail({ row, books, quotes, loading }) {
 
   return (
     <div className="px-4 py-4 bg-gray-950/60 border-t border-gray-800/70 space-y-4">
+
+      {age && (
+        <div className={`text-xs ${age.hrs < 24 ? 'text-gray-400' : 'text-orange-300/80'}`}>
+          This pick posted <span className={age.cls}>{age.text} ago</span> — {age.label}.{' '}
+          <span className="text-gray-500">{age.note}.</span>
+          {age.hrs >= 72 && ' The line has already made its move; there is nothing left to capture here.'}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Field label="Opened" value={fmt(row.open_line)} />
@@ -278,6 +311,14 @@ export default function ClvPanel({ season }) {
   const [expanded, setExpanded] = useState(null)
   const [quotes, setQuotes] = useState({})    // "AWAY@HOME" -> every book's quote
   const [loadingQuotes, setLoadingQuotes] = useState(false)
+  const [now, setNow] = useState(() => new Date())
+
+  // Pick age is the most decision-relevant number here, so keep it ticking
+  // rather than frozen at page load.
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60_000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -363,7 +404,7 @@ export default function ClvPanel({ season }) {
   const visible = [...(qualifyingOnly ? inTab.filter(r => r.qualifies) : inTab)]
     .sort(SORTS[sort].fn)
   const showTotalsCaveat = tab !== 'spread'
-  const GRID = 'grid-cols-[52px_1.4fr_70px_110px_100px_80px_90px_80px_60px_54px]'
+  const GRID = 'grid-cols-[52px_1.3fr_62px_70px_110px_95px_78px_86px_76px_56px_52px]'
 
   return (
     <div className="p-4 space-y-5 max-w-6xl mx-auto">
@@ -377,6 +418,11 @@ export default function ClvPanel({ season }) {
           the market's final answer — the fastest honest read on whether the model works.
           {' '}<span className="text-gray-400">Take</span> shows the best number and price on the board right
           now, across every book — worth about +0.30 pts a bet on its own. Click any row for the full panel.
+          <span className="block mt-1.5 text-gray-400">
+            <span className="text-green-400">Age matters more than anything else here.</span> A pick is worth
+            +1.55 CLV in its first 6 hours and roughly nothing after 3 days — the line has already moved.
+            Bet promptly or skip it.
+          </span>
         </span>
       </div>
 
@@ -470,6 +516,7 @@ export default function ClvPanel({ season }) {
         <div className={`hidden md:grid ${GRID} gap-2 px-4 py-2 text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800`}>
           <span>Type</span>
           <span>Game</span>
+          <span className="text-right">Age</span>
           <span className="text-right">Opened</span>
           <span className="text-right">We project (move)</span>
           <span className="text-right">Take</span>
@@ -491,6 +538,7 @@ export default function ClvPanel({ season }) {
               : (r.predicted_side === 'home' ? r.home_team : r.away_team)
             const pair = `${r.away_team}@${r.home_team}`
             const key = `${r.game_id}_${r.bet_type}`
+            const age = pickAge(r, now)
             const bb = bestFor(r, best[pair])
             const isOpen = expanded === key
             return (
@@ -520,6 +568,13 @@ export default function ClvPanel({ season }) {
                   )}
                   <span className="text-gray-100">{r.away_team} @ {r.home_team}</span>
                   <span className="text-gray-600 text-xs ml-2">Wk {r.week}</span>
+                </div>
+                {/* How long this pick has been sitting. Nearly all the CLV is
+                    earned in the first few hours, so staleness is a first-class
+                    column, not a detail. */}
+                <div className="text-right text-xs tabular-nums" title={age ? `${age.label} — ${age.note}` : ''}>
+                  {age ? <span className={age.cls}>{age.text}</span>
+                       : <span className="text-gray-700">—</span>}
                 </div>
                 <div className="text-right text-gray-400 text-xs tabular-nums">{fmt(r.open_line)}</div>
                 <div className="text-right text-xs tabular-nums">
@@ -578,7 +633,7 @@ export default function ClvPanel({ season }) {
               </div>
               {isOpen && (
                 <RowDetail row={r} books={best[pair]} quotes={quotes[pair]}
-                           loading={loadingQuotes && !quotes[pair]} />
+                           loading={loadingQuotes && !quotes[pair]} age={age} />
               )}
               </div>
             )
