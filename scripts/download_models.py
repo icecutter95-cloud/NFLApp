@@ -27,7 +27,8 @@ REQUIRED_MODEL_FILES = ["spread_model.joblib", "total_model.joblib"]
 # warn, not crash the whole run the way a missing prediction model must.
 OPTIONAL_MODEL_FILES = ["spread_calibration.joblib", "total_calibration.joblib",
                         "movement_model.joblib", "movement_features.joblib",
-                        "margin_model.joblib", "margin_features.joblib"]
+                        "margin_model.joblib", "margin_features.joblib",
+                        "total_movement_model.joblib", "total_movement_features.joblib"]
 
 for filename in REQUIRED_MODEL_FILES:
     print(f"Downloading {filename}...")

@@ -66,7 +66,8 @@ def load_joined() -> pd.DataFrame:
     oc = oc[oc["n_snapshots_week"] >= 2]
 
     keep = ["season", "home_team", "away_team", "week_open_spread_home",
-            "closing_spread_home", "week_spread_movement"]
+            "closing_spread_home", "week_spread_movement",
+            "week_open_total", "week_total_movement"]
     j = feats.merge(oc[keep], on=["season", "home_team", "away_team"],
                     how="inner", suffixes=("", "_oc"))
     return j.dropna(subset=["week_open_spread_home", "week_spread_movement"])
@@ -148,6 +149,20 @@ def train_and_save_production(df: pd.DataFrame):
     joblib.dump(mmodel, MODELS_DIR / "margin_model.joblib")
     joblib.dump(mfeats, MODELS_DIR / "margin_features.joblib")
     print(f"  saved -> margin_model.joblib ({len(mfeats)} features, {len(mfit)} games)")
+
+    # Totals movement model. Totals get tracked alongside spreads but held to a
+    # HIGHER bar (see TOTALS_MOVE_THRESHOLD): the ATS-style disagreement signal
+    # is worthless for totals (49-51% at every threshold), so a totals play rests
+    # on movement alone, where a spread play has two independent signals agreeing.
+    # Movement >=1.25 held in both test periods (59.2% / 56.6%) but >=1.5 inverted
+    # on the holdout (63.0% -> 47.4%), so confidence here is materially lower.
+    from config import TOTAL_FEATURES
+    tfeats = [c for c in TOTAL_FEATURES if c in df.columns] + ["week_open_total"]
+    tfit = df.dropna(subset=["week_total_movement", "week_open_total"])
+    tmodel = train_model(tfit[tfeats], tfit["week_total_movement"], tfit, "total_movement_production")
+    joblib.dump(tmodel, MODELS_DIR / "total_movement_model.joblib")
+    joblib.dump(tfeats, MODELS_DIR / "total_movement_features.joblib")
+    print(f"  saved -> total_movement_model.joblib ({len(tfeats)} features, {len(tfit)} games)")
 
 
 def main():

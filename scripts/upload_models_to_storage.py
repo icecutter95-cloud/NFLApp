@@ -33,6 +33,7 @@ MODEL_FILES = [
     # Line-movement model + its exact feature order (CLV tracking).
     "movement_model.joblib", "movement_features.joblib",
     "margin_model.joblib", "margin_features.joblib",
+    "total_movement_model.joblib", "total_movement_features.joblib",
 ]
 
 for filename in MODEL_FILES:

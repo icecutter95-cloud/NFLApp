@@ -45,6 +45,10 @@ from score_week import (supabase, fetch_current_schedule, current_week_number,
                         assert_feature_parity)
 
 WEEKLY_WINDOW_DAYS = 10
+# Totals need a much larger predicted move to qualify. They have only ONE
+# working signal (movement) where spreads have two independent ones, and the
+# next threshold up (1.5) inverted on the holdout -- 63.0% -> 47.4%.
+TOTALS_MOVE_THRESHOLD = 1.25
 
 
 def main():
@@ -63,6 +67,16 @@ def main():
     # Second, independent signal: the margin model's disagreement with the
     # opener. A bet only qualifies when BOTH agree, which held up in each
     # period separately (61.5% / 60.0%) where either alone was weaker.
+    # Totals movement model. Tracked alongside spreads but held to a higher bar
+    # (TOTALS_MOVE_THRESHOLD) and flagged lower-confidence in the UI: totals have
+    # only ONE working signal where spreads have two, and the threshold above the
+    # one we use inverted on the holdout.
+    total_model = total_feats = None
+    tm_path = MODELS_DIR / "total_movement_model.joblib"
+    if tm_path.exists():
+        total_model = joblib.load(tm_path)
+        total_feats = joblib.load(MODELS_DIR / "total_movement_features.joblib")
+
     margin_model = margin_feats = None
     mm_path = MODELS_DIR / "margin_model.joblib"
     if mm_path.exists():
@@ -88,6 +102,7 @@ def main():
     # dk_spread already uses the standard convention (negative = home favored),
     # matching week_open_spread_home in training.
     feats["week_open_spread_home"] = feats["dk_spread"].astype(float)
+    feats["week_open_total"] = feats["dk_total"].astype(float)
 
     assert_feature_parity(feats, feat_order, "movement")
     preds = model.predict(feats[feat_order].fillna(0))
@@ -100,52 +115,87 @@ def main():
     else:
         disagreement = np.full(len(feats), np.nan)
 
+    if total_model is not None:
+        assert_feature_parity(feats, total_feats, "total_movement")
+        tot_preds = total_model.predict(feats[total_feats].fillna(0))
+    else:
+        tot_preds = None
+
     # Which games already have a frozen prediction? Never overwrite: the whole
     # point is to hold the number from when the board first posted.
-    existing = supabase.table("line_predictions").select("game_id") \
-        .eq("season", season).eq("week", week).execute()
-    already = {r["game_id"] for r in (existing.data or [])}
+    existing = supabase.table("line_predictions").select("game_id, bet_type")         .eq("season", season).eq("week", week).execute()
+    already = {(r["game_id"], r["bet_type"]) for r in (existing.data or [])}
 
-    # game_id must match line_open_close (The Odds API event id) so the view can
-    # join; fall back to the team pair if a line row is missing.
-    rows, skipped = [], 0
-    for (_, g), pred, dis in zip(feats.iterrows(), preds, disagreement):
-        line = lines.get((g["home_team"], g["away_team"]), {})
-        gid = line.get("game_id") or f"{season}_{week}_{g['away_team']}_{g['home_team']}"
-        if gid in already:
-            skipped += 1
-            continue
-        opener = float(g["dk_spread"])
-        side = "home" if pred < 0 else "away"
-        rows.append({
+    def make_row(gid, g, bet_type, opener, movement, side, disagree):
+        return {
             "game_id": gid,
+            "bet_type": bet_type,
             "season": int(g["season"]),
             "week": int(g["week"]),
             "home_team": g["home_team"],
             "away_team": g["away_team"],
             "commence_time": g["game_time"],
-            "open_spread_home": opener,
-            "predicted_movement": round(float(pred), 3),
+            "open_line": opener,
+            # Legacy spread-specific column, kept populated for spreads only.
+            "open_spread_home": opener if bet_type == "spread" else None,
+            "predicted_movement": round(movement, 3),
             "predicted_side": side,
-            "taken_line": opener if side == "home" else -opener,
-            "margin_disagreement": None if np.isnan(dis) else round(float(dis), 3),
-        })
+            # 'home' and 'under' take the number as-is; 'away' and 'over' take
+            # the mirrored side of the spread. Totals are quoted as one number,
+            # so over/under both sit at the same line.
+            "taken_line": (-opener if (bet_type == "spread" and side == "away") else opener),
+            "margin_disagreement": disagree,
+        }
 
-    print(f"  {len(games)} games | {skipped} already logged | {len(rows)} new")
+    # game_id must match line_open_close (The Odds API event id) so the view can
+    # join; fall back to the team pair if a line row is missing.
+    rows, skipped = [], 0
+    for i, ((_, g), pred, dis) in enumerate(zip(feats.iterrows(), preds, disagreement)):
+        line = lines.get((g["home_team"], g["away_team"]), {})
+        gid = line.get("game_id") or f"{season}_{week}_{g['away_team']}_{g['home_team']}"
+
+        if (gid, "spread") in already:
+            skipped += 1
+        else:
+            opener = float(g["dk_spread"])
+            rows.append(make_row(gid, g, "spread", opener, float(pred),
+                                 "home" if pred < 0 else "away",
+                                 None if np.isnan(dis) else round(float(dis), 3)))
+
+        # Totals ride on movement alone -- the disagreement signal is worthless
+        # there (49-51% at every threshold), so margin_disagreement stays null.
+        if tot_preds is not None:
+            if (gid, "total") in already:
+                skipped += 1
+            else:
+                tp = float(tot_preds[i])
+                rows.append(make_row(gid, g, "total", float(g["dk_total"]), tp,
+                                     "over" if tp > 0 else "under", None))
+
+    n_spread = sum(1 for r in rows if r["bet_type"] == "spread")
+    n_total  = sum(1 for r in rows if r["bet_type"] == "total")
+    print(f"  {len(games)} games | {skipped} already logged | "
+          f"{len(rows)} new ({n_spread} spread, {n_total} total)")
+
     for r in rows:
         d = r["margin_disagreement"]
-        q = (d is not None and abs(d) >= 3.0 and abs(r["predicted_movement"]) >= 0.5
-             and ((d > 0) == (r["predicted_movement"] < 0)))
-        print(f"    {r['away_team']:>3} @ {r['home_team']:<3}  open {r['open_spread_home']:+5.1f}  "
-              f"move {r['predicted_movement']:+6.2f}  disagree {0.0 if d is None else d:+6.2f}  "
-              f"-> take {r['predicted_side']:<4} at {r['taken_line']:+5.1f}"
+        if r["bet_type"] == "spread":
+            q = (d is not None and abs(d) >= 3.0 and abs(r["predicted_movement"]) >= 0.5
+                 and ((d > 0) == (r["predicted_movement"] < 0)))
+            extra = f"disagree {0.0 if d is None else d:+6.2f}  "
+        else:
+            q = abs(r["predicted_movement"]) >= TOTALS_MOVE_THRESHOLD
+            extra = " " * 17
+        print(f"    [{r['bet_type'][:3].upper()}] {r['away_team']:>3} @ {r['home_team']:<3}  "
+              f"open {r['open_line']:+6.1f}  move {r['predicted_movement']:+6.2f}  {extra}"
+              f"-> {r['predicted_side']:<5} at {r['taken_line']:+6.1f}"
               f"{'   *** QUALIFIES' if q else ''}")
 
     if dry:
         print("  --dry-run: nothing written")
         return
     if rows:
-        supabase.table("line_predictions").upsert(rows, on_conflict="game_id").execute()
+        supabase.table("line_predictions").upsert(rows, on_conflict="game_id,bet_type").execute()
         print(f"  wrote {len(rows)} predictions")
 
     # Show CLV so far for this season.
