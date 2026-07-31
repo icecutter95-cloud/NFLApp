@@ -179,6 +179,9 @@ export default function ModelPerformancePanel({ season }) {
       tracked: rows.length,
       qualifying: rows.filter(r => r.qualifies).length,
       meanClv: clv.length ? clv.reduce((a, b) => a + b, 0) / clv.length : null,
+      // Graded only once final scores land (fetch-results.yml, Tuesdays).
+      all: tally(rows.filter(r => r.result != null)),
+      qual: tally(rows.filter(r => r.result != null && r.qualifies)),
     }
   }, [live, betType])
 
@@ -328,10 +331,58 @@ export default function ModelPerformancePanel({ season }) {
                 color={liveStats.meanClv > 0 ? 'text-green-400' : liveStats.meanClv < 0 ? 'text-red-400' : undefined}
               />
             </div>
-            <p className="text-xs text-gray-600 mt-3">
-              Win/loss for the live season is not graded yet — no final scores are loaded for {season}.
-              CLV resolves first and is the earlier honest signal; the record above is what to expect meanwhile.
-            </p>
+            {liveStats.all.n === 0 ? (
+              <p className="text-xs text-gray-600 mt-3">
+                Nothing graded yet — no {season} games have final scores. Results load Tuesdays,
+                and CLV resolves first either way; the record above is what to expect meanwhile.
+              </p>
+            ) : (
+              <div className="mt-4">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-gray-600 border-b border-gray-800">
+                      <th className="text-left pb-2 font-normal">Slice</th>
+                      <th className="text-right pb-2 font-normal">W-L-P</th>
+                      <th className="text-right pb-2 font-normal">Win%</th>
+                      <th className="text-right pb-2 font-normal">ROI</th>
+                      <th className="text-right pb-2 font-normal">Units</th>
+                      <th className="text-right pb-2 font-normal">CLV</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800/50">
+                    {[['All lines', liveStats.all, false], ['Qualifying', liveStats.qual, true]].map(
+                      ([label, s, isQual]) => s.n === 0 ? null : (
+                        <tr key={label}>
+                          <td className="py-2">
+                            {isQual
+                              ? <span className="text-green-400 flex items-center gap-1"><Target size={10} /> {label}</span>
+                              : <span className="text-gray-500">{label}</span>}
+                          </td>
+                          <td className="py-2 text-right text-gray-300 tabular-nums">
+                            {s.w}-{s.l}{s.p ? `-${s.p}` : ''}
+                          </td>
+                          <td className={`py-2 text-right tabular-nums font-medium ${edgeColor(s.winPct)}`}>
+                            {pct(s.winPct)}
+                          </td>
+                          <td className={`py-2 text-right tabular-nums ${s.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {signed(s.roi)}%
+                          </td>
+                          <td className={`py-2 text-right tabular-nums ${s.units >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {signed(s.units)}u
+                          </td>
+                          <td className={`py-2 text-right tabular-nums ${s.clv >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {signed(s.clv, 2)}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+                <p className="text-xs text-gray-600 mt-3">
+                  Graded at the number we froze at the opener, not at the close. A season is far too few
+                  bets to confirm or refute the track record above — CLV moves first, win rate takes years.
+                </p>
+              </div>
+            )}
           </>
         )}
       </div>

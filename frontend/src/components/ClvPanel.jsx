@@ -151,7 +151,7 @@ export default function ClvPanel({ season }) {
   const visible = [...(qualifyingOnly ? inTab.filter(r => r.qualifies) : inTab)]
     .sort(SORTS[sort].fn)
   const showTotalsCaveat = tab !== 'spread'
-  const GRID = 'grid-cols-[52px_1.4fr_70px_110px_100px_80px_90px_80px_60px]'
+  const GRID = 'grid-cols-[52px_1.4fr_70px_110px_100px_80px_90px_80px_60px_54px]'
 
   return (
     <div className="p-4 space-y-5 max-w-6xl mx-auto">
@@ -263,6 +263,7 @@ export default function ClvPanel({ season }) {
           <span className="text-right">Moved</span>
           <span className="text-right">CLV</span>
           <span className="text-right">Dir</span>
+          <span className="text-right">Result</span>
         </div>
 
         <div className="divide-y divide-gray-800/50">
@@ -327,6 +328,15 @@ export default function ClvPanel({ season }) {
                     : r.direction_correct
                       ? <TrendingUp size={13} className="inline text-green-400" />
                       : <TrendingDown size={13} className="inline text-red-400" />}
+                </div>
+                {/* Graded at the frozen opener once final scores load (Tuesdays). */}
+                <div className="text-right text-xs font-medium">
+                  {r.result == null
+                    ? <span className="text-gray-700">—</span>
+                    : <span className={
+                        r.result === 'win' ? 'text-green-400'
+                        : r.result === 'loss' ? 'text-red-400' : 'text-gray-400'
+                      }>{r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'Push'}</span>}
                 </div>
               </div>
             )

@@ -10,6 +10,7 @@
  *   { action: 'score-week',     season: number, week: number }
  *   { action: 'update-metrics', season: number }
  *   { action: 'log-clv',        season?: number, week?: number }  // blank = auto-detect
+ *   { action: 'fetch-results',  season?: number }                 // blank = current season
  */
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
@@ -42,6 +43,7 @@ serve(async (req) => {
     const WORKFLOWS: Record<string, string> = {
       'update-metrics': 'update-metrics.yml',
       'log-clv':        'log-clv.yml',
+      'fetch-results':  'fetch-results.yml',
       'score-week':     'score-week.yml',
     }
     const workflow = WORKFLOWS[action] ?? 'score-week.yml'
@@ -51,6 +53,8 @@ serve(async (req) => {
       inputs = { season: String(season) }
     } else if (action === 'log-clv') {
       inputs = { season: season ? String(season) : '', week: week ? String(week) : '' }
+    } else if (action === 'fetch-results') {
+      inputs = { season: season ? String(season) : '' }
     } else {
       inputs = { season: String(season), week: String(week) }
     }
