@@ -6,6 +6,7 @@ import EdgeList from './components/EdgeList'
 import PerformancePanel from './components/PerformancePanel'
 import BacktestPanel from './components/BacktestPanel'
 import ClvPanel from './components/ClvPanel'
+import ModelPerformancePanel from './components/ModelPerformancePanel'
 
 const CUR_SEASON = 2026
 const ALL_WEEKS  = Array.from({ length: 18 }, (_, i) => i + 1)
@@ -19,7 +20,10 @@ export default function App() {
   // Default to CLV: the line-movement model is the only piece with
   // out-of-sample evidence behind it. Edges is retained for reference but
   // its ATS picks are gated off (no demonstrated edge vs closing lines).
-  const [view, setView]               = useState('clv')  // 'clv' | 'edges' | 'performance' | 'backtest'
+  // 'clv' | 'model' | 'edges' | 'performance' | 'backtest'
+  // 'model' is the movement model's own line-level record; 'performance' stays
+  // pointed at manually logged bets, which is a different question.
+  const [view, setView]               = useState('clv')
   const [filters, setFilters]         = useState({
     betType:         'all',
     confidence:      'all',
@@ -96,6 +100,8 @@ export default function App() {
       )}
 
       {view === 'clv' && <ClvPanel season={season} />}
+
+      {view === 'model' && <ModelPerformancePanel season={season} />}
 
       {view === 'performance' && <PerformancePanel bets={bets} />}
 
