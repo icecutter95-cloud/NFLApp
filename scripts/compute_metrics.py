@@ -554,10 +554,19 @@ def _load_pbp(season: int) -> pd.DataFrame:
     return pbp
 
 
-def build_team_metrics_for_season(season: int) -> pd.DataFrame:
-    print(f"\n=== Season {season} ===")
+def build_game_level(season: int, verbose: bool = True) -> pd.DataFrame:
+    """Per-team-per-game metrics for a season, before any rolling.
+
+    Split out from build_team_metrics_for_season so diagnostics can work with
+    RAW per-game values. Rolled L4/L8 columns are smoothed, which inflates any
+    autocorrelation you measure on them -- so a repeatability screen has to run
+    on these unsmoothed numbers to mean anything.
+    """
+    if verbose:
+        print(f"\n=== Season {season} ===")
     pbp = _load_pbp(season)
-    print(f"  {len(pbp):,} plays loaded")
+    if verbose:
+        print(f"  {len(pbp):,} plays loaded")
 
     # Compute per-game metrics and merge
     epa = compute_epa_metrics(pbp)
@@ -599,9 +608,13 @@ def build_team_metrics_for_season(season: int) -> pd.DataFrame:
     # Who each team actually played — required for opponent adjustment.
     game_level = game_level.merge(_matchups(pbp), on=["game_id", "team"], how="left")
     missing_opp = game_level["opponent"].isna().sum()
-    if missing_opp:
+    if missing_opp and verbose:
         print(f"  WARNING: {missing_opp} team-game rows have no opponent mapped")
+    return game_level
 
+
+def build_team_metrics_for_season(season: int) -> pd.DataFrame:
+    game_level = build_game_level(season)
     print(f"  {len(game_level)} team-game rows. Computing rolling windows...")
     weekly = build_rolling_metrics(game_level, season)
     print(f"  {len(weekly)} team-week rows produced")
