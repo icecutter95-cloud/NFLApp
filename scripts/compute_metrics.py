@@ -364,6 +364,77 @@ def compute_ngs(season: int) -> pd.DataFrame:
     return merged
 
 
+def compute_scoring_decomposition(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Split scoring into what the OFFENSE earned vs what came from elsewhere,
+    and compare offensive points to what the drive-level EPA implied.
+
+    points_scored_off currently comes from the FINAL SCORE, so a defensive or
+    special-teams touchdown is credited to the offense as if it were offensive
+    production. In 2024 that was 60 of 1461 touchdowns (4.1%). Those scores are
+    both not the offense's doing and famously high-variance -- exactly the kind
+    of thing a luck adjustment is meant to strip out.
+
+    Produces per team-game:
+      points_off          points the offense actually earned (TD/XP/2pt/FG)
+      points_def_st       points from defensive/ST TDs and safeties
+      points_off_allowed  offensive points surrendered by this team's defense
+      expected_points_off EPA-implied offensive points (see below)
+      points_luck_off     points_off - expected_points_off
+
+    Expected points come from regressing offensive points on summed offensive
+    EPA across all team-games in the season. EPA is already denominated in
+    expected points, so this is close to a units conversion; fitting it per
+    season is a two-parameter leaguewide aggregate over ~550 team-games and
+    carries no meaningful team-level leakage.
+    """
+    need = ["touchdown", "td_team", "posteam", "defteam", "field_goal_result",
+            "extra_point_result", "epa"]
+    if any(c not in pbp.columns for c in need):
+        return pd.DataFrame()
+
+    keys = ["game_id", "season", "week"]
+    p = pbp.copy()
+
+    # Points earned by the team currently on offense.
+    off_pts = np.where((p["touchdown"] == 1) & (p["td_team"] == p["posteam"]), 6.0, 0.0)
+    off_pts += np.where(p["extra_point_result"].eq("good"), 1.0, 0.0)
+    if "two_point_conv_result" in p.columns:
+        off_pts += np.where(p["two_point_conv_result"].eq("success"), 2.0, 0.0)
+    off_pts += np.where(p["field_goal_result"].eq("made"), 3.0, 0.0)
+    p["_off_pts"] = off_pts
+
+    # Points earned by the team currently on defense (returns, safeties).
+    def_pts = np.where((p["touchdown"] == 1) & (p["td_team"] == p["defteam"]), 6.0, 0.0)
+    if "safety" in p.columns:
+        def_pts += np.where(p["safety"] == 1, 2.0, 0.0)
+    p["_def_pts"] = def_pts
+
+    off = (p.groupby(keys + ["posteam"])
+           .agg(points_off=("_off_pts", "sum"),
+                points_conceded_by_own_D=("_def_pts", "sum"),
+                epa_sum_off=("epa", "sum"))
+           .reset_index().rename(columns={"posteam": "team"}))
+
+    dfn = (p.groupby(keys + ["defteam"])
+           .agg(points_off_allowed=("_off_pts", "sum"),
+                points_def_st=("_def_pts", "sum"))
+           .reset_index().rename(columns={"defteam": "team"}))
+
+    out = off.merge(dfn, on=keys + ["team"], how="outer").fillna(0)
+
+    # EPA-implied offensive points, then the residual as the luck term.
+    fit = out[out["epa_sum_off"].notna() & out["points_off"].notna()]
+    if len(fit) > 50:
+        b, a = np.polyfit(fit["epa_sum_off"], fit["points_off"], 1)
+        out["expected_points_off"] = a + b * out["epa_sum_off"]
+    else:
+        out["expected_points_off"] = np.nan
+    out["points_luck_off"] = out["points_off"] - out["expected_points_off"]
+
+    return out[keys + ["team", "points_off", "points_def_st", "points_off_allowed",
+                       "expected_points_off", "points_luck_off"]]
+
+
 def compute_scoring_from_schedule(season: int) -> pd.DataFrame:
     """
     Points scored and allowed per team per game, pulled from schedule final scores.
@@ -419,6 +490,9 @@ METRIC_COLS = [
     "ngs_separation", "ngs_yac_oe",
     # Scoring volume — critical for totals model
     "points_scored_off", "points_allowed_def",
+    # Luck-decomposed scoring (offense-only, EPA-implied, residual)
+    "points_off", "points_def_st", "points_off_allowed",
+    "expected_points_off", "points_luck_off",
 ]
 
 # Opponent-adjusted counterparts, produced inside build_rolling_metrics.
@@ -576,6 +650,7 @@ def build_game_level(season: int, verbose: bool = True) -> pd.DataFrame:
     pace = compute_pace(pbp)
     to = compute_turnovers(pbp)
     exp_to = compute_expected_turnovers(pbp)
+    scoredec = compute_scoring_decomposition(pbp)
     press = compute_pressure(pbp)
     ngs = compute_ngs(season)
     scoring = compute_scoring_from_schedule(season)
@@ -596,6 +671,9 @@ def build_game_level(season: int, verbose: bool = True) -> pd.DataFrame:
         # went your way and should not be projected forward.
         game_level["turnover_luck"] = (
             game_level["turnover_margin"] - game_level["expected_turnover_margin"])
+
+    if not scoredec.empty:
+        game_level = game_level.merge(scoredec, on=["game_id", "team", "season", "week"], how="left")
 
     # NGS is keyed team-week (one game per team per week), not game_id.
     if not ngs.empty:
