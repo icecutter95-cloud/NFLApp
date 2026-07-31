@@ -32,6 +32,7 @@ MODEL_FILES = [
     "spread_calibration.joblib", "total_calibration.joblib",
     # Line-movement model + its exact feature order (CLV tracking).
     "movement_model.joblib", "movement_features.joblib",
+    "margin_model.joblib", "margin_features.joblib",
 ]
 
 for filename in MODEL_FILES:

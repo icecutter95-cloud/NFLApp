@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { TrendingUp, TrendingDown, Minus, Info } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Info, Target } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 // This view tracks the LINE MOVEMENT model, which is a different question from
@@ -31,6 +31,7 @@ function Stat({ label, value, sub, color }) {
 export default function ClvPanel({ season }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [qualifyingOnly, setQualifyingOnly] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -61,6 +62,7 @@ export default function ClvPanel({ season }) {
     const clv = closed.map(r => r.clv_points)
     const mean = clv.length ? clv.reduce((a, b) => a + b, 0) / clv.length : null
     return {
+      qualifying: rows.filter(r => r.qualifies).length,
       tracked: rows.length,
       resolved: closed.length,
       meanClv: mean,
@@ -118,7 +120,25 @@ export default function ClvPanel({ season }) {
           sub={stats.dirN ? `of ${stats.dirN} that moved` : 'none moved yet'}
           color={stats.dirAcc == null ? undefined : stats.dirAcc > 50 ? 'text-green-400' : 'text-red-400'}
         />
-        <Stat label="Season" value={season} sub="paper tracking" />
+        <Stat label="Qualifying" value={stats.qualifying} sub="both signals agree" color="text-green-400" />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => setQualifyingOnly(v => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border transition-colors ${
+            qualifyingOnly
+              ? 'border-green-500 text-green-400 bg-green-950'
+              : 'border-gray-700 text-gray-500 hover:border-gray-500'
+          }`}
+        >
+          <Target size={12} /> Qualifying only
+        </button>
+        <span className="text-xs text-gray-600">
+          Qualifying = margin model disagrees with the opener by 3+ pts AND the movement
+          model expects 0.5+ pts of drift the same way. Held 61.5% / 60.0% across the two
+          test periods at ~2.5 games a week.
+        </span>
       </div>
 
       <div className="bg-gray-900 rounded border border-gray-800 overflow-hidden">
@@ -134,21 +154,24 @@ export default function ClvPanel({ season }) {
         </div>
 
         <div className="divide-y divide-gray-800/50">
-          {rows.map(r => {
+          {(qualifyingOnly ? rows.filter(r => r.qualifies) : rows).map(r => {
             const pending = r.clv_points == null
             const clv = r.clv_points ?? 0
             const side = r.predicted_side === 'home' ? r.home_team : r.away_team
             return (
               <div key={r.game_id}
-                   className="grid grid-cols-[1.6fr_70px_80px_90px_80px_90px_80px_70px] gap-2 px-4 py-2.5 text-sm items-center hover:bg-gray-800/30">
+                   className={`grid grid-cols-[1.6fr_70px_80px_90px_80px_90px_80px_70px] gap-2 px-4 py-2.5 text-sm items-center hover:bg-gray-800/30 ${
+                     r.qualifies ? 'bg-green-950/20 border-l-2 border-l-green-600' : ''
+                   }`}>
                 <div className="min-w-0">
+                  {r.qualifies && <Target size={11} className="inline mr-1.5 text-green-500" />}
                   <span className="text-gray-100">{r.away_team} @ {r.home_team}</span>
                   <span className="text-gray-600 text-xs ml-2">Wk {r.week}</span>
                 </div>
                 <div className="text-right text-gray-400 text-xs tabular-nums">{fmtLine(r.open_spread_home)}</div>
                 <div className="text-right text-gray-300 text-xs tabular-nums">{fmtLine(r.projected_close)}</div>
                 <div className="text-right text-xs">
-                  <span className="text-gray-200 font-medium">{side}</span>
+                  <span className={r.qualifies ? 'text-green-300 font-semibold' : 'text-gray-200 font-medium'}>{side}</span>
                   <span className="text-gray-500 ml-1 tabular-nums">{fmtLine(r.taken_line)}</span>
                 </div>
                 <div className="text-right text-gray-400 text-xs tabular-nums">{fmtLine(r.closing_spread_home)}</div>

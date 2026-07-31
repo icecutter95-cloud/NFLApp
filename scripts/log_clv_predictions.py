@@ -60,6 +60,17 @@ def main():
     model = joblib.load(model_path)
     feat_order = joblib.load(MODELS_DIR / "movement_features.joblib")
 
+    # Second, independent signal: the margin model's disagreement with the
+    # opener. A bet only qualifies when BOTH agree, which held up in each
+    # period separately (61.5% / 60.0%) where either alone was weaker.
+    margin_model = margin_feats = None
+    mm_path = MODELS_DIR / "margin_model.joblib"
+    if mm_path.exists():
+        margin_model = joblib.load(mm_path)
+        margin_feats = joblib.load(MODELS_DIR / "margin_features.joblib")
+    else:
+        print("  WARNING: no margin_model.joblib — 'qualifies' cannot be computed")
+
     print(f"CLV logging: season={season} week={week}")
     games = fetch_current_schedule(season, week)
     if games.empty:
@@ -81,6 +92,14 @@ def main():
     assert_feature_parity(feats, feat_order, "movement")
     preds = model.predict(feats[feat_order].fillna(0))
 
+    if margin_model is not None:
+        assert_feature_parity(feats, margin_feats, "margin")
+        pred_margin = margin_model.predict(feats[margin_feats].fillna(0))
+        # >0 means the model rates home above what the opener implies.
+        disagreement = pred_margin + feats["week_open_spread_home"].values
+    else:
+        disagreement = np.full(len(feats), np.nan)
+
     # Which games already have a frozen prediction? Never overwrite: the whole
     # point is to hold the number from when the board first posted.
     existing = supabase.table("line_predictions").select("game_id") \
@@ -90,7 +109,7 @@ def main():
     # game_id must match line_open_close (The Odds API event id) so the view can
     # join; fall back to the team pair if a line row is missing.
     rows, skipped = [], 0
-    for (_, g), pred in zip(feats.iterrows(), preds):
+    for (_, g), pred, dis in zip(feats.iterrows(), preds, disagreement):
         line = lines.get((g["home_team"], g["away_team"]), {})
         gid = line.get("game_id") or f"{season}_{week}_{g['away_team']}_{g['home_team']}"
         if gid in already:
@@ -109,13 +128,18 @@ def main():
             "predicted_movement": round(float(pred), 3),
             "predicted_side": side,
             "taken_line": opener if side == "home" else -opener,
+            "margin_disagreement": None if np.isnan(dis) else round(float(dis), 3),
         })
 
     print(f"  {len(games)} games | {skipped} already logged | {len(rows)} new")
     for r in rows:
+        d = r["margin_disagreement"]
+        q = (d is not None and abs(d) >= 3.0 and abs(r["predicted_movement"]) >= 0.5
+             and ((d > 0) == (r["predicted_movement"] < 0)))
         print(f"    {r['away_team']:>3} @ {r['home_team']:<3}  open {r['open_spread_home']:+5.1f}  "
-              f"pred {r['predicted_movement']:+6.2f} -> take {r['predicted_side']:<4} "
-              f"at {r['taken_line']:+5.1f}")
+              f"move {r['predicted_movement']:+6.2f}  disagree {0.0 if d is None else d:+6.2f}  "
+              f"-> take {r['predicted_side']:<4} at {r['taken_line']:+5.1f}"
+              f"{'   *** QUALIFIES' if q else ''}")
 
     if dry:
         print("  --dry-run: nothing written")

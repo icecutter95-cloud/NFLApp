@@ -135,6 +135,20 @@ def train_and_save_production(df: pd.DataFrame):
           f"({sorted(fit.season.unique())})")
     print(f"  saved -> {path.name} ({len(feats)} features)")
 
+    # Absolute-margin model. The bet filter needs the model's disagreement with
+    # the OPENER, and that must be computed from a predicted MARGIN -- deriving
+    # it from the cover-surplus model would require subtracting the closing
+    # line, which smuggles (close - open) into the term and manufactures a
+    # correlation with movement. That exact mistake produced a fake 82.5%
+    # directional accuracy earlier, so this is trained as its own artifact.
+    full = pd.read_parquet(DATA_DIR / "historical_dataset_regular.parquet")
+    mfeats = [c for c in SPREAD_FEATURES if c in full.columns]
+    mfit = full.dropna(subset=["home_margin"])
+    mmodel = train_model(mfit[mfeats], mfit["home_margin"], mfit, "margin_production")
+    joblib.dump(mmodel, MODELS_DIR / "margin_model.joblib")
+    joblib.dump(mfeats, MODELS_DIR / "margin_features.joblib")
+    print(f"  saved -> margin_model.joblib ({len(mfeats)} features, {len(mfit)} games)")
+
 
 def main():
     df = load_joined()
