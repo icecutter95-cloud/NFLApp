@@ -1,0 +1,20 @@
+{
+  "counts": {
+    "line_predictions": 32,
+    "clv_tracking": 32,
+    "movement_history": 1640,
+    "game_results": 285,
+    "line_history": 3423,
+    "book_lines": 679,
+    "best_book_lines": 272,
+    "line_open_close": 272,
+    "preseason_predictions": 2,
+    "preseason_lines": 7
+  },
+  "track_record": {
+    "spread_select_qualifying": "46-29",
+    "spread_holdout_qualifying": "26-19",
+    "total_select_qualifying": "71-49",
+    "total_holdout_qualifying": "30-23"
+  }
+}
