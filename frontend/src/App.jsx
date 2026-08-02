@@ -7,6 +7,7 @@ import PerformancePanel from './components/PerformancePanel'
 import BacktestPanel from './components/BacktestPanel'
 import ClvPanel from './components/ClvPanel'
 import ModelPerformancePanel from './components/ModelPerformancePanel'
+import PreseasonPanel from './components/PreseasonPanel'
 
 const CUR_SEASON = 2026
 const ALL_WEEKS  = Array.from({ length: 18 }, (_, i) => i + 1)
@@ -102,6 +103,9 @@ export default function App() {
       {view === 'clv' && <ClvPanel season={season} />}
 
       {view === 'model' && <ModelPerformancePanel season={season} />}
+
+      {/* Lines only — preseason is deliberately outside the model. */}
+      {view === 'preseason' && <PreseasonPanel />}
 
       {view === 'performance' && <PerformancePanel bets={bets} />}
 

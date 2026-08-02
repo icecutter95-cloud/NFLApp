@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap, LineChart, Target } from 'lucide-react'
+import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap, LineChart, Target, Eye } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 export default function Header({
@@ -188,6 +188,7 @@ export default function Header({
         {navBtn('edges',       null,                        'Edges')}
         {navBtn('performance', <BarChart2 size={12} />,    'My Bets')}
         {navBtn('backtest',    <FlaskConical size={12} />, 'Backtest')}
+        {navBtn('preseason',   <Eye size={12} />,          'Preseason')}
       </div>
 
     </header>
