@@ -63,6 +63,25 @@ def load() -> pd.DataFrame:
         subset=["week_open_spread_home", "week_spread_movement"])
 
 
+def side_reference(actual) -> list:
+    """Reference strategies, because 'predict zero' is not actually a null.
+
+    CLV here is signed by which side you take, so a prediction of exactly zero
+    still falls on one side of `pred < 0` and quietly becomes "always bet away".
+    That is a directional strategy, not the absence of one. Reporting both fixed
+    sides makes the systematic drift visible instead of smuggling it into a row
+    labelled "no skill".
+    """
+    return [
+        {"name": "always HOME", "corr": float("nan"), "mae": float("nan"),
+         "dir": float("nan"), "clv": float(np.mean(-actual)),
+         "clv_pos": float((-actual > 0).mean())},
+        {"name": "always AWAY", "corr": float("nan"), "mae": float("nan"),
+         "dir": float("nan"), "clv": float(np.mean(actual)),
+         "clv_pos": float((actual > 0).mean())},
+    ]
+
+
 def evaluate(name, pred, actual, opener) -> dict:
     corr = float(np.corrcoef(pred, actual)[0, 1]) if pred.std() > 1e-9 else float("nan")
     mae = float(np.abs(pred - actual).mean())
@@ -107,8 +126,8 @@ def main():
             print(f"\n{tag}: only {len(ev)} games — skipping")
             continue
         actual, opener = ev[TGT].values, ev[OPEN].values
-        rows = [evaluate("A predict zero", np.zeros(len(ev)), actual, opener),
-                evaluate("B opener only", b.predict(ev[[OPEN]].fillna(0)), actual, opener)]
+        rows = side_reference(actual)
+        rows.append(evaluate("B opener only", b.predict(ev[[OPEN]].fillna(0)), actual, opener))
         show(rows, f"{tag}   n={len(ev)}")
 
     # Sample size is the structural reason CFB is worth doing at all: the NFL
