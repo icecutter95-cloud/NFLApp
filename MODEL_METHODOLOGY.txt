@@ -1,0 +1,373 @@
+================================================================================
+NFL + COLLEGE FOOTBALL BETTING MODELS — METHODOLOGY, INPUTS, AND FINDINGS
+As of 2026-08-03
+================================================================================
+
+PURPOSE OF THIS DOCUMENT
+------------------------
+This is a self-contained description of two betting models (NFL and college
+football) written so an outside reader can critique it without access to the
+code. It is deliberately written to expose weaknesses rather than sell results.
+
+A previous outside critique of this project found a real and serious error (a
+sign convention bug that had inflated an apparent 70% win rate to nothing), so
+the intent here is to invite the same treatment. Sections marked
+"OPEN QUESTION" are where critique is most wanted.
+
+Everything below is measured, not asserted. Where a number is uncertain or the
+sample is small, that is stated.
+
+
+================================================================================
+PART 1 — THE CENTRAL THESIS
+================================================================================
+
+The NFL app rests on a single finding: we cannot beat the closing line at
+predicting football, but the weekly OPENING line is softer, and the movement
+between open and close is partly predictable.
+
+So the model does not try to answer "who covers?" It answers "which way is this
+number going to move?" You take the early price, and closing line value (CLV)
+accrues whether or not any individual bet wins.
+
+CLV is the primary metric because it resolves in weeks rather than seasons. Win
+rate on ~45 bets a year cannot be distinguished from break-even; it would take
+roughly 700 bets (about 15 NFL seasons) to separate 57% from 52.4%.
+
+DEFINITIONS USED THROUGHOUT
+  spread convention   NEGATIVE = home favored (standard sportsbook convention)
+  week_open           the line at the first snapshot inside 10 days of kickoff
+  close               the last snapshot before kickoff
+  movement            closing_spread_home - week_open_spread_home
+  CLV (points)        home bet: open - close;  away bet: close - open
+  break-even          52.38% at -110
+  disagreement        predicted_margin + week_open_spread_home
+                      (>0 means the model rates home above what the opener implies)
+
+
+================================================================================
+PART 2 — NFL MODEL
+================================================================================
+
+2.1 DATA SOURCES
+  nfl_data_py       schedules, play-by-play, injuries, rosters (2018-2025)
+  The Odds API      line snapshots, DraftKings anchor, historical from mid-2020
+  Open-Meteo        historical weather per game
+  Supabase          storage, views, live pipeline
+
+  Line coverage limits the usable sample: 1,612 games, 2020-2025.
+
+2.2 MODELS (three, all XGBoost: depth 3, lr 0.03, reg_alpha 1.0, reg_lambda 5.0,
+    recency weighted 0.75^seasons_back)
+
+  movement_model        predicts week_spread_movement. Inputs = 57 team features
+                        PLUS the opener itself.
+  margin_model          predicts home_margin. Inputs = the same 57 features,
+                        WITHOUT any line input. Kept separate on purpose (see
+                        2.6 "contamination").
+  total_movement_model  predicts week_total_movement.
+
+2.3 FEATURES (57)
+  16  EPA and success rate, opponent-adjusted, rolling L4/L8, offense+defense
+  10  injury aggregates (QB out, offensive/defensive starters out, questionable)
+   5  rest days, bye week, short week
+   3  travel miles, timezone delta, absolute timezone delta
+   2  home field advantage (per team), divisional flag
+  21  other: pace, third down, red zone, pressure rate, NGS-derived,
+      scoring decomposition, expected turnovers, weather
+
+  Opponent adjustment subtracts the faced unit's established strength, computed
+  from PRIOR weeks only.
+  In-season metrics are blended with a prior via (n*in_season + k*prior)/(n+k),
+  k=3. NOTE: k was fitted before the sign bug was found and has never been
+  re-validated on the corrected target.
+
+2.4 VALIDATION PROTOCOL
+  train   2020-2022
+  select  2023-2024   (thresholds chosen here)
+  holdout 2025        (looked at once)
+  Plus a walk-forward: for each season S, fit on <S, choose threshold on <S,
+  apply to S, never revisit. No season is both selection and test.
+
+2.5 THE BETTING RULE
+  Qualify a spread when ALL THREE hold:
+    |disagreement| >= 3.0
+    |predicted movement| >= 0.5
+    the two point the same way, i.e. (disagreement > 0) == (movement < 0)
+  Bet the side the line is predicted to move toward, at the opener.
+
+  Totals: |predicted total movement| >= 1.25 only. There is no working second
+  signal for totals (tested, see 2.7).
+
+2.6 RESULTS
+  Movement model (walk-forward, opener + features vs opener-only control):
+    select  corr 0.301   direction 60.0%   CLV +0.35
+    holdout corr 0.327   direction 65.3%   CLV +0.66
+    opener-only control: corr -0.025 / +0.064, direction 43.6% / 47.2%
+    -> the football features, not mean reversion, drive it
+
+  Qualifying record:
+    holdout 2025     26-19   57.8%   95% CI [43.3, 72.2]
+    walk-forward     30-23   56.6%   95% CI [43.3, 69.9]   ROI +8.1%
+    totals holdout   30-23   56.6%   (movement >= 1.25, one signal only)
+
+  Dual-signal decomposition (walk-forward, d>=7.0, m>=0.5):
+    movement only       55.2%  (467 bets)
+    disagreement only   58.4%  (185 bets)
+    BOTH agree          59.5%  ( 74 bets)
+    -> each layer improves the last; this justifies the rule's shape
+
+  Margin prediction vs the market (walk-forward, n=1090):
+    our model     corr 0.327   MAE 10.29
+    market close  corr 0.455   MAE  9.51
+    best blend    10% model / 90% market -> 0.457 vs market 0.455
+    -> we do NOT beat the close; the model adds ~nothing on top of it
+
+  ATS betting our disagreement with the CLOSE:
+    |edge|>=0  51.6% | >=3  53.4% | >=6  54.5% | >=10  57.1% (n=57)
+    -> monotone rising, the shape an edge would have, but tiny at the top
+
+2.7 TWO EXECUTION FINDINGS THAT ARE STRONGER THAN THE MODEL ITSELF
+
+  TIMING. CLV by how long a pick has been sitting:
+    under 6 hrs   +1.55 CLV   70% positive   (n=106)
+    6-24 hrs      +0.86       59%            (n= 76)
+    1-3 days      +0.42       43%            (n=102)
+    3+ days       -0.05       15%            (n= 95)
+    Paired on the same game, early beats late by +1.46 points at t=7.0.
+    This is by far the most statistically solid finding in the project.
+    Acted on: the CLV logger now runs every 3 hours instead of daily.
+
+  LINE SHOPPING. A better number than DraftKings exists on 78% of games, worth
+    ~+0.30 points per bet across 2021-2025, using 9 liquid books.
+    Acted on: the UI shows best line/book/price per side.
+
+  CLV CONVERSION (does CLV actually become wins?):
+    NFL, CLV >= 1 point earned -> 58.6% (944 bets)
+    Gradient: 0.5-1 -> 50.0% | 1-2 -> 57.2% | 2+ -> 60.0%
+
+2.8 IDEAS TESTED AND REJECTED (NFL)
+  All have scripts in the repo. None is shipped.
+
+  - Totals second signal. A proper total-POINTS model vs the opening total
+    correlates with movement (+0.32 select / +0.19 holdout) but does not
+    convert: alone it degrades from 52.8% to 49.1% as the threshold rises, and
+    combined with movement it reads 60.3% on select and 48.1% on holdout.
+  - Multi-book panel as a model feature. Improves movement correlation in both
+    periods (0.277->0.299, 0.230->0.287) but the paired CLV gain is +0.05 to
+    +0.09 at t=0.7-1.4. Not significant.
+  - Key-number crossing as a selection filter. Never helps; on totals it hurts
+    (holdout 51.7% crossing vs 62.5% not crossing).
+  - Key-number RESISTANCE as a feature. The effect is real (lines opening on 3
+    stay put 30% of the time vs 20-24% at 2.5/3.5) but it governs WHETHER a
+    line moves, not WHICH WAY, so it is orthogonal to a directional bet.
+  - Predicted-public reverse line movement. Built a public-lean proxy from
+    favorite tilt and franchise popularity; it FAILED its own sanity check
+    (correlation with subsequent movement +0.038, i.e. nothing), so the RLM
+    hypothesis was not actually tested. Two explanations fit and the design
+    cannot separate them: bad proxy, or public lean already priced into the
+    opener.
+  - Sharp-vs-retail divergence. Retail books (DK, FanDuel, MGM, Caesars,
+    BetRivers) vs sharp books (Pinnacle, BetOnline, LowVig). The mechanism is
+    real: they disagree on 42% of games and the line then moves toward the
+    sharp number 57.4% / 58.7% / 64.9% as the gap widens. But as a model
+    feature it does not convert.
+
+2.9 EMPIRICALLY DERIVED KEY NUMBERS (2018-2025, share on N vs mean of N±1)
+    margin  3   14.4% vs 4.9%   2.92x
+    margin 10    4.9% vs 1.7%   2.85x
+    margin 14    5.1% vs 1.8%   2.83x
+    margin  7    8.5% vs 5.5%   1.55x
+    total  51    4.1% vs 2.1%   1.93x
+    total  44    4.0% vs 2.9%   1.39x
+    total  41    3.5% vs 2.6%   1.33x
+    total  47    3.2% vs 2.6%   1.21x  (not key)
+    Note "3 and 7" undersells it: 10 and 14 spike as hard as 3.
+
+
+================================================================================
+PART 3 — COLLEGE FOOTBALL MODEL
+================================================================================
+
+3.1 DATA SOURCES
+  CollegeFootballData API   games, per-game advanced stats, drives, SP+, FPI,
+                            Elo, recruiting talent, returning production, venues
+  The Odds API (NCAAF)      line snapshots, DraftKings anchor
+  Sample: 3,791 FBS-vs-FBS games, 2020-2025
+
+3.2 TEAM CROSSWALK
+  136 FBS programs, mapped from BOTH the Odds API naming and CFBD naming to a
+  single canonical key. Validated against 12 historical snapshots; 98 non-FBS
+  entities correctly excluded. Traps handled explicitly: Miami vs Miami (OH),
+  Ole Miss, Louisiana vs UL Monroe, "Youngstown St" (no period), inconsistent
+  "University"/"College" suffixes, "San José State" (accented e), and four
+  schools that renamed mid-sample (Sam Houston State, Dixie State/Utah Tech,
+  Houston Baptist, Texas A&M-Commerce/East Texas A&M).
+
+  FCS opponents (~100 games/yr) are excluded explicitly, not zero-filled.
+
+3.3 FEATURES (~40)
+  In-season form, opponent-adjusted where noted, rolled and SHIFTED so a game
+  never sees itself:
+    core (adjusted, L4 and L8):  off/def PPA, off/def success rate
+    trench (L4):                 power success, stuff rate, line yards,
+                                 second-level yards, open-field yards
+    situational (L4):            standard-downs and passing-downs PPA / SR
+    drives (L4):                 avg starting field position (off and def),
+                                 drive scoring rate (off and def), drives count
+  Season-level priors, all knowable before week 1:
+    prior-season SP+ (overall/offense/defense)
+    recruiting talent composite (current and prior year)
+    returning production (percent PPA)
+    prior-season FPI + offense/defense/SPECIAL TEAMS efficiencies
+  In-season rating:
+    weekly Elo, LAGGED one week (week W-1 used for a week-W game)
+  Context:
+    rest days, travel miles (haversine from each team's home venue),
+    elevation change, dome, neutral site, conference game, games played
+
+  All team features enter the model as HOME MINUS AWAY differentials.
+
+3.4 KNOWN SAMPLING WEAKNESS — OPENER TIMING
+  The CFB opener sits a median 147 hours before kickoff; the NFL's sits at 169.
+  Worse, coverage is not uniform. Share of games whose opener snapshot falls on
+  a Sunday (the earliest we capture):
+    2020 1% | 2021 3% | 2022 10% | 2023 27% | 2024 67% | 2025 71%
+  So the DEFINITION of "opener" drifts across the sample, and early training
+  years carry systematically later openers than recent test years.
+  OPEN QUESTION: how much does this invalidate the walk-forward?
+
+3.5 RESULTS
+  Margin prediction vs the market (walk-forward, n=2808):
+    our model     corr 0.601   MAE 12.73
+    market close  corr 0.657   MAE 12.10
+    gap          -0.056        (NFL's gap is -0.128, so CFB is relatively closer)
+    best blend    10% model / 90% market -> 0.657, same as market alone
+
+  ATS betting our disagreement with the CLOSE:
+    |edge|>=0  51.6% | >=3  52.9% | >=6  53.2%
+    -> monotone rising for the first time after the latest feature revision
+
+  Walk-forward with the NFL's dual rule:  39-43, 47.6%, CI [36.8, 58.4]
+
+  Dual-signal decomposition (the important result):
+                        d>=3.0                  d>=7.0
+    movement only    52.0% (787)             52.0% (787)
+    disagreement     53.8% (1619)            53.5% (635)
+    BOTH agree       53.8% (327)             49.4% (160)
+    -> In the NFL every layer improves the last. In CFB, requiring both signals
+       to agree makes it WORSE at d>=7.0 (53.5% -> 49.4%) while cutting the
+       sample from 635 to 160. The dual rule is inherited NFL structure that
+       does not belong here.
+    -> Disagreement-only is the best CFB rule at both bars, on much larger
+       samples than anything else examined. NOT adopted: the 95% CI at d>=7.0
+       is [49.7, 57.4] and contains break-even, and the bars were not chosen
+       blind.
+
+  Feature audit (ablation, drop-one-family, on margin prediction):
+    dropping the new ratings (Elo + FPI)  costs -0.0334   <- most valuable
+    dropping trench                       costs -0.0060
+    dropping core EPA                     costs -0.0046
+    dropping situational                  costs -0.0017
+    dropping drives                       costs -0.0008
+    dropping the old preseason family     HELPS +0.0064
+    -> Elo/FPI have superseded SP+/talent/returning; they are substitutes and
+       the newer ratings are better. The old family is retained only because it
+       covers weeks 1-3 where Elo is stale by construction.
+    Redundancy: L4 and L8 of the same metric correlate at a MEDIAN of 0.948.
+    Two families (explosiveness, run/pass tendency) were removed because
+    dropping them IMPROVED the model.
+
+3.6 WHY COLLEGE IS HARDER DESPITE MORE DATA
+  Residual SD of (margin + closing spread):  NFL 12.8   CFB 15.4
+  Value of one point of line:                NFL 3.12pp CFB 2.58pp
+  CLV conversion, CLV >= 1 point earned:     NFL 58.6% (944 bets)
+                                             CFB 52.9% (2261 bets)
+  College games are noisier and a point of line buys less win probability, so
+  the same CLV lands barely past break-even instead of comfortably past it.
+
+
+================================================================================
+PART 4 — CROSS-CUTTING FINDINGS
+================================================================================
+
+4.1 THE CLV / WIN-RATE DISSOCIATION (the most troubling pattern)
+  In BOTH sports, as the model's confidence in movement rises, CLV rises and
+  win rate FALLS.
+    NFL by |predicted movement|:  0.5-1.0 -> 68.0% win, +1.40 CLV
+                                  1.0-1.5 -> 47.4% win, +1.97 CLV
+                                  1.5+    -> 44.4% win, +2.39 CLV
+  HYPOTHESIS (untested): large predicted moves track games where the line moves
+  for REAL reasons — injury news, weather, late information. We get in early and
+  capture the points, but the market moved because it learned something true,
+  which means our early side was genuinely the worse one. If this is right, CLV
+  is a worse proxy for edge than the whole project assumes.
+  OPEN QUESTION: how would you test this cleanly?
+
+4.2 EVERYTHING THAT WORKED WAS EXECUTION, NOT PREDICTION
+  Shipped and paying: bet promptly (+1.55 CLV), shop the number (+0.30).
+  Tested and rejected: six separate attempts to predict football better.
+  Neither sport's model beats its own closing line.
+
+4.3 BUGS FOUND (listed because they calibrate how much to trust the rest)
+  - SIGN BUG. nflverse spread_line is POSITIVE when home is favored, the
+    opposite of sportsbook convention. The target became correct + 2*spread,
+    so the model learned to reconstruct the market line and was scored against
+    a target containing that same term. Apparent 70-75% ATS was really 52.5%.
+  - Playoff join fan-out: game_results holds 285 games/season, not 272, so
+    joining predictions on (season, home, away) duplicated any pair that met
+    again in January, showing one bet as both a win and a loss.
+  - Lookahead in the timing analysis: picks are computed FROM the weekly
+    opener, so snapshots before it are unusable. Including them showed a fat
+    +1.94 CLV on the months-out lookahead board — pure look-ahead bias.
+  - CFB postseason week numbers restart at 1, colliding with regular-season
+    week 1; and CFBD labels Week 0 games as week 1. Together, 108 colliding
+    keys that fanned an 8,984-row frame to 9,756.
+  - Week-1 Elo leak: the fallback used the earliest AVAILABLE in-season rating,
+    which is computed after week 1 was played. Fixing it reduced measured
+    performance, confirming it had been inflating results.
+  - An all-null feature (SP+ exposes offense.pace but never populates it) silently
+    emptied the entire dataset via a dropna.
+  - Multi-book merge on team pair without a season key fanned 1,612 games to
+    4,656 and produced a fake 81.2% holdout.
+
+
+================================================================================
+PART 5 — WHAT WE MOST WANT CRITIQUED
+================================================================================
+
+1. Is CLV a valid optimization target? Section 4.1 shows CLV and win rate
+   moving in OPPOSITE directions as model confidence rises, in both sports.
+   That is the single most uncomfortable result here.
+
+2. Is the NFL 56.6% real, or survivorship? It is 30-23 across four walk-forward
+   seasons with a CI of [43.3, 69.9], and its per-season record is 50.0 / 41.7 /
+   76.9 / 55.6. The 2024 fold (10-3) carries most of it.
+
+3. Is the CFB disagreement-only result (53.8% on 1,619 bets) worth pursuing,
+   or is it the next thing that will evaporate? It is the largest sample we
+   have and above break-even at two thresholds, but the thresholds were not
+   chosen blind.
+
+4. The CFB opener definition drifts across the sample (Section 3.4). Does that
+   invalidate the walk-forward, and is there a defensible way to correct it
+   short of discarding 2020-2022?
+
+5. Are we wrong to have abandoned outcome prediction? Neither model beats its
+   close, but the CFB margin gap (-0.056) is half the NFL's (-0.128), and CFB
+   ATS-vs-close is now monotone rising (51.6 / 52.9 / 53.2).
+
+6. What obvious feature families are still missing? Known gaps: QB
+   continuity/injury for CFB (transfer portal, starter changes), weather for
+   CFB, coaching changes, havoc rate and points-per-opportunity (available only
+   as leaky season aggregates), and anything about market microstructure beyond
+   what is listed in 2.8.
+
+7. Sample size. NFL yields ~45 qualifying bets a season. Is there a defensible
+   statistical approach to this problem that we are not using — Bayesian
+   shrinkage, hierarchical pooling across sports, something else?
+
+
+================================================================================
+END
+================================================================================
