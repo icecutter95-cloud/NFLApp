@@ -424,6 +424,49 @@ tested. Results, in order of how much they changed things:
   Negative-CLV bets sit on break-even, and by season run 44.4/65.2/47.4 —
   carried entirely by 2024. There is no anomaly to explain.
 
+4B.7 TOTALS PUT THROUGH THE SAME GAUNTLET (and a parity audit)
+  Every validation above operated on SPREADS. The live totals rule
+  (|movement| >= 1.25) came from an earlier select/holdout sweep and had never
+  been walk-forwarded, nested or permutation-tested.
+
+  Parity check first, because a fair comparison requires the totals model to be
+  at the same stage of development:
+    FEATURES  TOTAL_FEATURES is a strict SUPERSET of SPREAD_FEATURES -- all 57
+              plus is_dome, temp_fahrenheit, wind_speed_mph, precipitation_prob.
+              Every tier of feature work, the opponent adjustment and the metric
+              blend are shared. Nothing was applied to spreads and withheld.
+    HARNESS   identical nested out-of-fold selection, Wilson lower-bound
+              objective, rule-shape candidates and permutation procedure.
+    CAVEAT    the first totals run was too GENEROUS: it handed the model a
+              total-points disagreement signal that does not exist in
+              production. The live rule is movement-only.
+
+  Both formulations were then tested:
+
+    with a disagreement signal (not in production)
+      80-59   57.6%  ROI  +9.9%   CI [49.3, 65.8]
+      permuted mean 52.8%  sd 3.7  max 61.1   3/25   p=0.154   +1.3 sd
+
+    the ACTUAL live rule, movement-only >= 1.25
+      128-87  59.5%  ROI +13.7%   CI [53.0, 66.1]
+      permuted mean 52.6%  sd 5.9  max 63.8   5/25   p=0.231   +1.2 sd
+
+  The live rule has the best point estimate of anything tested and its
+  binomial interval clears break-even, yet noise reaches it one time in five.
+  Its noise SD is 5.9 points against the spread pipeline's 3.4.
+
+  Two things worth carrying:
+    * The totals noise floor is ~52.7%, ABOVE the 52.38% break-even. A permuted
+      totals pipeline is profitable on average, because the opener survives as a
+      feature and mean reversion plus a period under-bias persist through
+      shuffling. Totals must clear ~52.7% before anything is demonstrated.
+    * Per-season records swing 70.2 / 40.4 / 60.0. That is instability, not
+      variance around an edge.
+
+  Conclusion: totals and spreads are NOT in the same evidential category
+  (+1.2 sd vs +2.7 sd), and this is not an artefact of an underdeveloped totals
+  model. The UI currently flags both as "qualifying".
+
 CURRENT STANDING AFTER ALL OF THE ABOVE
   NFL  120-86 (58.3%), ROI +11.2%, cluster CI [52.4, 64.3], permutation
        p <= 0.038. The strongest position the project has held.
