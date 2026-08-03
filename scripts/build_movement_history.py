@@ -41,7 +41,10 @@ from log_clv_predictions import TOTALS_MOVE_THRESHOLD
 from score_week import supabase
 
 SPREAD_DISAGREE_MIN = 3.0
-SPREAD_MOVE_MIN = 0.5
+# No movement-MAGNITUDE bar as of 2026-08-03 (was 0.5). Kept as a named
+# constant at 0.0 rather than deleted so the change is visible in diffs and in
+# the qualifying expression below. See log_clv_predictions.py for the evidence.
+SPREAD_MOVE_MIN = 0.0
 EVAL_SEASONS = [2023, 2024, 2025]
 HOLDOUT = [2025]
 

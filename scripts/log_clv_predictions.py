@@ -49,6 +49,11 @@ WEEKLY_WINDOW_DAYS = 10
 # working signal (movement) where spreads have two independent ones, and the
 # next threshold up (1.5) inverted on the holdout -- 63.0% -> 47.4%.
 TOTALS_MOVE_THRESHOLD = 1.25
+# Spreads qualify on margin disagreement plus direction agreement. There is
+# deliberately no movement-magnitude bar -- see the note in the loop below.
+# Totals are unchanged: nothing in the spread analysis transfers to them, and
+# they still ride on movement alone.
+SPREAD_DISAGREE_MIN = 3.0
 
 
 def main():
@@ -180,7 +185,18 @@ def main():
     for r in rows:
         d = r["margin_disagreement"]
         if r["bet_type"] == "spread":
-            q = (d is not None and abs(d) >= 3.0 and abs(r["predicted_movement"]) >= 0.5
+            # The movement MAGNITUDE bar was removed 2026-08-03. It required
+            # |predicted movement| >= 0.5, and the evidence says it was cutting
+            # good bets rather than filtering bad ones:
+            #   * a walk-forward selector scoring rules by the Wilson lower
+            #     bound chose "no magnitude bar" in every recent fold
+            #   * removing it took the NFL from 36-29 (55.4%) to 120-86 (58.3%)
+            #     -- volume rose AND the rate rose with it
+            #   * the rule without it passes a 25-run label-permutation test
+            #     (0/25 noise runs reached 58.3%); the tighter rule does not
+            # The movement model still decides the SIDE and supplies the
+            # direction-agreement test. Only the size requirement is gone.
+            q = (d is not None and abs(d) >= SPREAD_DISAGREE_MIN
                  and ((d > 0) == (r["predicted_movement"] < 0)))
             extra = f"disagree {0.0 if d is None else d:+6.2f}  "
         else:

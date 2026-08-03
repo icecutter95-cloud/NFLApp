@@ -222,7 +222,7 @@ function RowDetail({ row, books, quotes, loading, age }) {
           color={row.qualifies ? 'text-green-400' : 'text-gray-500'}
           title={isTotal
             ? 'Totals need 1.25+ pts of predicted movement — one signal only'
-            : 'Spreads need 3+ pts of margin disagreement AND 0.5+ pts of predicted drift the same way'}
+            : 'Spreads need 3+ pts of margin disagreement, with the movement model pointing the same way'}
         />
       </div>
 
@@ -505,8 +505,9 @@ export default function ClvPanel({ season }) {
 
         <span className="text-xs text-gray-600 leading-relaxed">
           <span className="text-gray-400">Spread</span> qualifies when the margin model disagrees with the opener
-          by 3+ pts AND the movement model expects 0.5+ pts of drift the same way — 61.5% / 60.0% across the two
-          test periods at ~2.5 games a week.{' '}
+          by 3+ pts and the movement model points the same way — 63.4% / 55.1% across the two test periods.
+          There is no minimum drift SIZE: that bar was removed after it was shown to cut good bets rather than
+          filter bad ones.{' '}
           <span className="text-amber-500/80">Total</span> qualifies on 1.25+ pts of predicted movement alone,
           which is a weaker and less stable bar — see the warning above.
         </span>
