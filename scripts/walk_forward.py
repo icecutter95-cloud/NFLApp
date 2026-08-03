@@ -39,6 +39,38 @@ OPEN, TGT = "week_open_spread_home", "week_spread_movement"
 DBARS = [2.0, 3.0, 5.0, 7.0]
 MBARS = [0.5, 1.0]
 MIN_BETS = 12          # a fold that picks fewer than this is not a strategy
+BETS = []              # every individual walk-forward bet, for the tier breakdown
+
+
+def tier_table(name):
+    """Break the pooled record down by conviction.
+
+    This is a DIAGNOSTIC, not a strategy. The tiers are read off the same test
+    results the record came from, so picking the best-looking one and betting it
+    would be selection on the test set. What it can honestly show is SHAPE: a
+    real edge should strengthen as the model's disagreement grows. A flat or
+    inverted profile means the number is coming from somewhere other than skill.
+    """
+    if not BETS:
+        return
+    b = pd.concat(BETS, ignore_index=True)
+    b = b[~b["push"]]
+    print(f"\n  {name} — {len(b)} bets broken down by conviction")
+
+    for label, col, bands in [
+        ("|disagreement|", "abs_dis", [(7, 10), (10, 14), (14, 99)]),
+        ("|pred movement|", "abs_mv", [(0.5, 1.0), (1.0, 1.5), (1.5, 99)]),
+    ]:
+        print(f"    {label:<16}{'n':>6}{'W-L':>10}{'win%':>8}{'ROI':>8}{'CLV':>8}")
+        for lo, hi in bands:
+            s = b[(b[col] >= lo) & (b[col] < hi)]
+            if len(s) < 8:
+                continue
+            w = int(s.won.sum())
+            l = len(s) - w
+            band = f"{lo}-{hi}" if hi < 99 else f"{lo}+"
+            print(f"    {band:<16}{len(s):>6}{f'{w}-{l}':>10}{w/len(s)*100:>7.1f}%"
+                  f"{(w*(100/110)-l)/len(s)*100:>+7.1f}%{s.clv_pts.mean():>+8.2f}")
 
 
 def load_nfl():
@@ -118,6 +150,20 @@ def run(name, df, feats, first_test):
         tot_w += w
         tot_l += l
         all_clv.append(clv * n)
+
+        # Keep every individual bet so the pooled record can be broken down by
+        # conviction afterwards. A record is only interesting if you can see
+        # whether it improves as the model gets more confident.
+        b = t[q].copy()
+        b["bet_home"] = b["mv"] < 0
+        sur = b["home_margin"].values + b[OPEN].values
+        b["won"] = np.where(b["bet_home"], sur > 0, sur < 0)
+        b["push"] = np.abs(sur) < 1e-9
+        b["abs_dis"] = b["dis"].abs()
+        b["abs_mv"] = b["mv"].abs()
+        b["clv_pts"] = np.where(b["bet_home"], -b[TGT].values, b[TGT].values)
+        b["test_season"] = S
+        BETS.append(b[["test_season", "abs_dis", "abs_mv", "won", "push", "clv_pts"]])
         print(f"  {S:<8}{f'd>={dbar} m>={mbar}':<16}{f'{w}-{l}':>10}"
               f"{w/n*100:>7.1f}%{(w*(100/110)-l)/n*100:>+8.1f}%{clv:>+8.2f}")
 
@@ -137,8 +183,12 @@ def main():
     nfl, nf = load_nfl()
     cfb, cf = load_cfb()
     # NFL has line coverage from 2020; first testable season needs 2 prior.
+    BETS.clear()
     run("NFL", nfl, nf, first_test=2022)
+    tier_table("NFL")
+    BETS.clear()
     run("CFB", cfb, cf, first_test=2022)
+    tier_table("CFB")
 
 
 if __name__ == "__main__":
