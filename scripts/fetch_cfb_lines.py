@@ -68,7 +68,14 @@ def season_stamps(season: int) -> list:
 
     stamps, d = [], start
     while d <= end:
-        if d.dayofweek == 0:                      # Monday
+        if d.dayofweek == 6:                      # Sunday
+            # Added after measuring that the Monday-only opener sat a median
+            # 129h before kickoff against the NFL's 169h -- we were reading
+            # college lines 40 hours later in their life than NFL ones, which
+            # is most of the window where CLV is actually earned.
+            stamps.append(d + timedelta(hours=2))    # Sat ~9pm ET, board posts
+            stamps.append(d + timedelta(hours=18))   # Sun ~1pm ET
+        elif d.dayofweek == 0:                    # Monday
             stamps.append(d + timedelta(hours=12))
         elif d.dayofweek == 5:                    # Saturday
             stamps.append(d + timedelta(hours=16))
