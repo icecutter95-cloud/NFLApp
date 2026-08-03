@@ -147,12 +147,31 @@ def fetch_team_games() -> pd.DataFrame:
             if r.get("seasonType") != "regular":
                 continue
             off, dfn = r.get("offense") or {}, r.get("defense") or {}
+            sd_o, pd_o = off.get("standardDowns") or {}, off.get("passingDowns") or {}
+            sd_d, pd_d = dfn.get("standardDowns") or {}, dfn.get("passingDowns") or {}
+            rush, pas = off.get("rushingPlays") or {}, off.get("passingPlays") or {}
             rows.append({
                 "game_id": r.get("gameId"), "season": s, "week": r["week"],
                 "team_raw": r["team"], "opp_raw": r["opponent"],
+                # Core efficiency -- these get opponent-adjusted.
                 "off_ppa": off.get("ppa"), "off_sr": off.get("successRate"),
-                "off_expl": off.get("explosiveness"),
                 "def_ppa": dfn.get("ppa"), "def_sr": dfn.get("successRate"),
+                # Trench play. The same payload already carried these; the first
+                # pass discarded them, which is most of why CFB had 12 features
+                # against the NFL model's 57.
+                "off_expl": off.get("explosiveness"), "def_expl": dfn.get("explosiveness"),
+                "off_power": off.get("powerSuccess"), "def_power": dfn.get("powerSuccess"),
+                "off_stuff": off.get("stuffRate"), "def_stuff": dfn.get("stuffRate"),
+                "off_line_yds": off.get("lineYards"), "def_line_yds": dfn.get("lineYards"),
+                "off_2nd_lvl": off.get("secondLevelYards"),
+                "off_open_field": off.get("openFieldYards"),
+                # Situational: staying ahead of the chains vs having to throw.
+                "off_sd_ppa": sd_o.get("ppa"), "off_pd_ppa": pd_o.get("ppa"),
+                "def_sd_ppa": sd_d.get("ppa"), "def_pd_ppa": pd_d.get("ppa"),
+                "off_sd_sr": sd_o.get("successRate"), "off_pd_sr": pd_o.get("successRate"),
+                # Tendency / pace proxy.
+                "off_rush_ppa": rush.get("ppa"), "off_pass_ppa": pas.get("ppa"),
+                "off_plays": off.get("plays"),
             })
     d = pd.DataFrame(rows)
     assert_cfbd_mapped([t for t in d.team_raw.unique()
@@ -160,6 +179,11 @@ def fetch_team_games() -> pd.DataFrame:
     d["team"] = d["team_raw"].map(cfbd_to_key)
     d["opp"] = d["opp_raw"].map(cfbd_to_key)
     d = d.dropna(subset=["team", "opp", "off_ppa", "def_ppa"])
+    # Sparse extras get the season median rather than dropping the game.
+    for c in RAW_COLS:
+        if c in d:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+            d[c] = d[c].fillna(d.groupby("season")[c].transform("median"))
     # Key on game_id, never (season, week, team). CFBD labels Week 0 games as
     # week 1, so a team that opened in Week 0 has TWO "week 1" rows -- Illinois
     # played Nebraska on Aug 28 2021 and UTSA on Sep 4, both tagged week 1.
@@ -207,7 +231,7 @@ def add_form(d: pd.DataFrame, dates: pd.DataFrame) -> pd.DataFrame:
     # season. One prior game is a weak signal, so `games_played` is carried
     # alongside and the preseason priors cover the gap.
     for n in ROLL:
-        for col in ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj", "off_expl"]:
+        for col in ROLLED:
             d[f"{col}_L{n}"] = (d.groupby(["season", "team"])[col]
                                 .transform(lambda s: s.shift(1).rolling(n, min_periods=1).mean()))
 
@@ -216,7 +240,7 @@ def add_form(d: pd.DataFrame, dates: pd.DataFrame) -> pd.DataFrame:
     # opponent-adjusted, mean-centred scales, and games_played tells the model
     # how much weight the number deserves.
     for n in ROLL:
-        for col in ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj", "off_expl"]:
+        for col in ROLLED:
             d[f"{col}_L{n}"] = d[f"{col}_L{n}"].fillna(0.0)
 
     # Rest days from the previous game, ordered by kickoff.
@@ -225,8 +249,17 @@ def add_form(d: pd.DataFrame, dates: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-FEATURE_COLS = [f"{c}_L{n}" for n in ROLL
-                for c in ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj", "off_expl"]]
+# Opponent-adjusted, matching what the NFL side adjusts (EPA and success rate).
+ADJ_COLS = ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj"]
+# Rolled as-is. Adjusting every one of these would double the bookkeeping for
+# diminishing return; the NFL pipeline makes the same trade.
+RAW_COLS = ["off_expl", "def_expl", "off_power", "def_power", "off_stuff",
+            "def_stuff", "off_line_yds", "def_line_yds", "off_2nd_lvl",
+            "off_open_field", "off_sd_ppa", "off_pd_ppa", "def_sd_ppa",
+            "def_pd_ppa", "off_sd_sr", "off_pd_sr", "off_rush_ppa",
+            "off_pass_ppa", "off_plays"]
+ROLLED = ADJ_COLS + RAW_COLS
+FEATURE_COLS = [f"{c}_L{n}" for n in ROLL for c in ROLLED]
 
 # Per-team season-level inputs, all knowable BEFORE a season starts. These are
 # what fix the two holes in the first pass:
