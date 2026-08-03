@@ -49,9 +49,9 @@ def load_nfl():
 
 
 def load_cfb():
-    from build_cfb_dataset import FEATURE_COLS, PRESEASON_COLS
+    from build_cfb_dataset import FEATURE_COLS, PRESEASON_COLS, INSEASON_COLS
     df = pd.read_parquet(DATA_DIR / "cfb_dataset.parquet")
-    feats = ([f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS
+    feats = ([f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS + INSEASON_COLS
               + ["games_played", "rest_days"]]
              + ["neutral_site", "conference_game", "travel_miles",
                 "elev_change", "is_dome"])

@@ -83,6 +83,14 @@ def fetch_preseason() -> pd.DataFrame:
             k = cfbd_to_key(r.get("team"))
             if k:
                 rows.setdefault((s, k), {})["returning_ppa"] = r.get("percentPPA")
+        for r in get("/ratings/fpi", year=s - 1):          # prior season only
+            k = cfbd_to_key(r.get("team"))
+            if k:
+                eff = r.get("efficiencies") or {}
+                rows.setdefault((s, k), {}).update({
+                    "fpi_prev": r.get("fpi"), "fpi_off_prev": eff.get("offense"),
+                    "fpi_def_prev": eff.get("defense"),
+                    "fpi_st_prev": eff.get("specialTeams")})
 
     out = pd.DataFrame([{"season": s, "team": t, **v} for (s, t), v in rows.items()])
     # A promoted or brand-new FBS program has no prior SP+; league-median is a
@@ -92,6 +100,29 @@ def fetch_preseason() -> pd.DataFrame:
         if c in out:
             out[c] = out[c].fillna(out.groupby("season")[c].transform("median"))
     return out
+
+
+def fetch_elo() -> pd.DataFrame:
+    """Weekly Elo, deliberately lagged one week.
+
+    CFBD's week parameter is documented as the rating entering that week, but
+    that is not verifiable from here, and this project has been burned twice by
+    a number that turned out to contain its own answer. Using week W-1 for a
+    week-W game costs a few days of freshness and removes the risk entirely.
+    """
+    rows = []
+    for s in SEASONS:
+        for w in range(1, 17):
+            try:
+                for r in get("/ratings/elo", year=s, week=w):
+                    k = cfbd_to_key(r.get("team"))
+                    if k and r.get("elo") is not None:
+                        rows.append({"season": s, "week": w + 1,
+                                     "team": k, "elo": float(r["elo"])})
+            except Exception:
+                continue
+    d = pd.DataFrame(rows)
+    return d.drop_duplicates(subset=["season", "week", "team"])
 
 
 def fetch_venues() -> pd.DataFrame:
@@ -259,7 +290,18 @@ RAW_COLS = ["off_expl", "def_expl", "off_power", "def_power", "off_stuff",
             "def_pd_ppa", "off_sd_sr", "off_pd_sr", "off_rush_ppa",
             "off_pass_ppa", "off_plays"]
 ROLLED = ADJ_COLS + RAW_COLS
-FEATURE_COLS = [f"{c}_L{n}" for n in ROLL for c in ROLLED]
+
+# Audit (analyze_cfb_features.py) drove the shape below:
+#   * dropping "explosive", "tendency" and the context diffs each IMPROVED the
+#     margin model, so they were noise, not information
+#   * L4 and L8 of the same metric correlate at a median 0.948 -- near
+#     duplicates that dilute a tree's splits without adding signal
+#   * preseason ratings were 25.1% of gain from 6 columns and cost -0.081
+#     correlation when removed, an order of magnitude more than anything else
+# So: both windows for the core efficiency measures, L4 only for the rest.
+DROPPED = {"off_expl", "def_expl", "off_rush_ppa", "off_pass_ppa", "off_plays"}
+FEATURE_COLS = ([f"{c}_L{n}" for n in ROLL for c in ADJ_COLS]
+                + [f"{c}_L4" for c in RAW_COLS if c not in DROPPED])
 
 # Per-team season-level inputs, all knowable BEFORE a season starts. These are
 # what fix the two holes in the first pass:
@@ -278,7 +320,15 @@ FEATURE_COLS = [f"{c}_L{n}" for n in ROLL for c in ROLLED]
 # 100% null, and since a median fill cannot rescue an all-null column, the
 # dropna below took every row. Excluded rather than carried as dead weight.
 PRESEASON_COLS = ["sp_prev", "sp_off_prev", "sp_def_prev",
-                  "talent", "talent_prev", "returning_ppa"]
+                  "talent", "talent_prev", "returning_ppa",
+                  # FPI adds a second independent rating plus a special-teams
+                  # efficiency, a phase the model had no input for at all.
+                  "fpi_prev", "fpi_off_prev", "fpi_def_prev", "fpi_st_prev"]
+
+# In-season strength, updated weekly. The audit said ratings carry this model,
+# and until now the only rating available was LAST season's -- by November the
+# model was still being told who was good in the previous January.
+INSEASON_COLS = ["elo"]
 CONTEXT_COLS = ["rest_days", "travel_miles", "elev_change", "is_dome", "games_played"]
 
 
@@ -329,6 +379,19 @@ def main():
         df = df.merge(p, on=["season", f"{side}_team"], how="left")
         assert len(df) == before_p, f"{side} preseason join fanned out"
 
+    # Weekly Elo, lagged. Falls back to the team's earliest available rating
+    # for week 1, where no prior-week Elo exists.
+    elo = fetch_elo()
+    for side in ("home", "away"):
+        e = elo.rename(columns={"team": f"{side}_team", "elo": f"{side}_elo"})
+        before_e = len(df)
+        df = df.merge(e, on=["season", "week", f"{side}_team"], how="left")
+        assert len(df) == before_e, f"{side} elo join fanned out"
+        first = elo.sort_values("week").groupby(["season", "team"])["elo"].first()
+        df[f"{side}_elo"] = df[f"{side}_elo"].fillna(
+            pd.Series(list(zip(df["season"], df[f"{side}_team"])), index=df.index).map(first))
+        df[f"{side}_elo"] = df[f"{side}_elo"].fillna(df.groupby("season")[f"{side}_elo"].transform("median"))
+
     # Venue: dome, altitude, and how far the away side travelled. Home venues
     # are inferred from each team's most-used stadium so travel can be measured
     # even for neutral-site games.
@@ -346,11 +409,11 @@ def main():
         df[c] = df[c].fillna(df[c].median())
 
     # Differentials are what the model actually reads.
-    for c in FEATURE_COLS + PRESEASON_COLS + ["games_played", "rest_days"]:
+    for c in FEATURE_COLS + PRESEASON_COLS + INSEASON_COLS + ["games_played", "rest_days"]:
         if f"home_{c}" in df and f"away_{c}" in df:
             df[f"diff_{c}"] = df[f"home_{c}"] - df[f"away_{c}"]
 
-    need = [f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS]
+    need = [f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS + INSEASON_COLS]
     need = [c for c in need if c in df]
     # An all-null feature would silently delete the entire dataset through the
     # dropna below -- exactly what sp_pace_prev did. Name it instead.
