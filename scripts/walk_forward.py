@@ -36,10 +36,68 @@ from train_models import train_model
 
 OPEN, TGT = "week_open_spread_home", "week_spread_movement"
 # Candidate bars, identical for both sports so neither gets a bespoke advantage.
-DBARS = [2.0, 3.0, 5.0, 7.0]
-MBARS = [0.5, 1.0]
+DBARS = [0.0, 2.0, 3.0, 5.0, 7.0]
+MBARS = [0.0, 0.5, 1.0]
+# Rule shapes, so the selector can drop a signal rather than only tighten bars.
+# The dual-signal test showed "both agree" helps the NFL and hurts CFB at high
+# bars, so which signals to use is a decision worth making per fold, not an
+# assumption baked in.
+RULES = ("both", "disagreement_only", "movement_only")
 MIN_BETS = 12          # a fold that picks fewer than this is not a strategy
+
+# How a fold picks its rule.
+#   winrate  maximise the out-of-fold win rate         (the old behaviour)
+#   lcb      maximise the LOWER BOUND of the win rate  (evidence-weighted)
+#   units    maximise total units won at -110
+#
+# "winrate" is actively wrong for college football. It maximises rate with only
+# a 12-bet floor, so it kept selecting rules that bet 16 games a season out of
+# ~700 -- discarding the volume that was the entire strategic reason to model
+# college in the first place. A rate you cannot measure is worth less than a
+# smaller one you can: 60.9% on 64 bets spans [49.0, 72.9], while 53.8% on 1,619
+# spans [51.4, 56.2].
+#
+# z=1.0 rather than 1.96: at 1.96 the penalty is so severe that only the very
+# largest samples ever win, which just replaces one blunt rule with another.
+OBJECTIVE = "lcb"
+LCB_Z = 1.0
+
+
+def wilson_lcb(w: int, l: int, z: float = LCB_Z) -> float:
+    """Lower bound of the Wilson interval. Rewards rate AND sample together."""
+    n = w + l
+    if n == 0:
+        return 0.0
+    p = w / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    margin = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return centre - margin
+
+
+def score_candidate(w: int, l: int, objective: str = OBJECTIVE) -> float:
+    if objective == "winrate":
+        return w / max(w + l, 1)
+    if objective == "units":
+        return w * (100 / 110) - l
+    return wilson_lcb(w, l)
+
+
+def apply_rule(d, kind, dbar, mbar):
+    """Mask + side for one candidate rule."""
+    agree = (d["dis"] > 0) == (d["mv"] < 0)
+    if kind == "both":
+        mask = (d["dis"].abs() >= dbar) & (d["mv"].abs() >= mbar) & agree
+        side = (d["mv"] < 0).values
+    elif kind == "disagreement_only":
+        mask = d["dis"].abs() >= dbar
+        side = (d["dis"] > 0).values
+    else:
+        mask = d["mv"].abs() >= mbar
+        side = (d["mv"] < 0).values
+    return mask, side
 BETS = []              # every individual walk-forward bet, for the tier breakdown
+ALL_BETS = []          # kept across both sports for the cluster bootstrap
 
 
 def tier_table(name):
@@ -104,7 +162,7 @@ def run(name, df, feats, first_test):
     tests = [s for s in seasons if s >= first_test]
     print(f"\n{'='*66}\n{name}   {len(df)} games, {len(feats)} features, "
           f"testing {tests}\n{'='*66}")
-    print(f"  {'season':<8}{'bar chosen':<16}{'W-L':>10}{'win%':>8}{'ROI':>9}{'CLV':>8}")
+    print(f"  {'season':<8}{'rule chosen':<22}{'W-L':>10}{'win%':>8}{'ROI':>9}{'CLV':>8}")
 
     tot_w = tot_l = 0
     all_clv = []
@@ -151,26 +209,31 @@ def run(name, df, feats, first_test):
             print(f"  {S:<8}{'no out-of-fold data':<16}")
             continue
         sel = pd.concat(oof, ignore_index=True)
-        best, best_wr = None, -1
-        for dbar in DBARS:
-            for mbar in MBARS:
-                q = ((sel["dis"].abs() >= dbar) & (sel["mv"].abs() >= mbar)
-                     & ((sel["dis"] > 0) == (sel["mv"] < 0)))
-                if q.sum() < MIN_BETS * 2:
-                    continue
-                w, l, _ = grade(sel[q], (sel[q]["mv"] < 0).values)
-                wr = w / max(w + l, 1)
-                if wr > best_wr:
-                    best_wr, best = wr, (dbar, mbar)
+        best, best_score = None, -1e9
+        for kind in RULES:
+            for dbar in DBARS:
+                for mbar in MBARS:
+                    # Skip bars a rule does not use, so the same rule is not
+                    # scored many times under different irrelevant thresholds.
+                    if kind == "disagreement_only" and mbar != MBARS[0]:
+                        continue
+                    if kind == "movement_only" and dbar != DBARS[0]:
+                        continue
+                    mask, side = apply_rule(sel, kind, dbar, mbar)
+                    if mask.sum() < MIN_BETS * 2:
+                        continue
+                    w, l, _ = grade(sel[mask], side[mask.values])
+                    sc = score_candidate(w, l)
+                    if sc > best_score:
+                        best_score, best = sc, (kind, dbar, mbar)
         if best is None:
-            print(f"  {S:<8}{'no bar qualified':<16}")
+            print(f"  {S:<8}{'no rule qualified':<16}")
             continue
 
-        dbar, mbar = best
+        kind, dbar, mbar = best
         t = prep(te)
-        q = ((t["dis"].abs() >= dbar) & (t["mv"].abs() >= mbar)
-             & ((t["dis"] > 0) == (t["mv"] < 0)))
-        w, l, clv = grade(t[q], (t[q]["mv"] < 0).values)
+        q, side = apply_rule(t, kind, dbar, mbar)
+        w, l, clv = grade(t[q], side[q.values])
         n = max(w + l, 1)
         tot_w += w
         tot_l += l
@@ -180,7 +243,7 @@ def run(name, df, feats, first_test):
         # conviction afterwards. A record is only interesting if you can see
         # whether it improves as the model gets more confident.
         b = t[q].copy()
-        b["bet_home"] = b["mv"] < 0
+        b["bet_home"] = side[q.values]
         sur = b["home_margin"].values + b[OPEN].values
         b["won"] = np.where(b["bet_home"], sur > 0, sur < 0)
         b["push"] = np.abs(sur) < 1e-9
@@ -188,8 +251,13 @@ def run(name, df, feats, first_test):
         b["abs_mv"] = b["mv"].abs()
         b["clv_pts"] = np.where(b["bet_home"], -b[TGT].values, b[TGT].values)
         b["test_season"] = S
-        BETS.append(b[["test_season", "abs_dis", "abs_mv", "won", "push", "clv_pts"]])
-        print(f"  {S:<8}{f'd>={dbar} m>={mbar}':<16}{f'{w}-{l}':>10}"
+        b["wk"] = b["week"] if "week" in b else 0
+        BETS.append(b[["test_season", "wk", "abs_dis", "abs_mv", "won", "push", "clv_pts"]])
+        ALL_BETS.append(b[["test_season", "wk", "won", "push", "clv_pts"]])
+        tag = {"both": f"both d>={dbar} m>={mbar}",
+               "disagreement_only": f"dis-only d>={dbar}",
+               "movement_only": f"mv-only m>={mbar}"}[kind]
+        print(f"  {S:<8}{tag:<22}{f'{w}-{l}':>10}"
               f"{w/n*100:>7.1f}%{(w*(100/110)-l)/n*100:>+8.1f}%{clv:>+8.2f}")
 
     n = max(tot_w + tot_l, 1)
@@ -197,7 +265,7 @@ def run(name, df, feats, first_test):
     roi = (tot_w * (100 / 110) - tot_l) / n * 100
     se = np.sqrt((wr / 100) * (1 - wr / 100) / n) * 100
     print(f"  {'-'*58}")
-    print(f"  {'TOTAL':<8}{'':<16}{f'{tot_w}-{tot_l}':>10}{wr:>7.1f}%{roi:>+8.1f}%"
+    print(f"  {'TOTAL':<8}{'':<22}{f'{tot_w}-{tot_l}':>10}{wr:>7.1f}%{roi:>+8.1f}%"
           f"{sum(all_clv)/n:>+8.2f}")
     print(f"  95% CI [{wr-1.96*se:.1f}, {wr+1.96*se:.1f}]   "
           f"break-even 52.38%   {'CLEARS' if wr-1.96*se > 52.38 else 'contains break-even'}")
