@@ -123,9 +123,34 @@ def run(name, df, feats, first_test):
             d["dis"] = mm.predict(d[feats].fillna(0)) + d[OPEN].values
             return d
 
-        # Threshold chosen on PRIOR seasons only. The most recent two are used
-        # so the choice reflects current market behaviour rather than 2020.
-        sel = prep(df[(df.season < S) & (df.season >= S - 2)])
+        # Threshold selection must use OUT-OF-FOLD predictions.
+        #
+        # This previously scored df[season < S] with `mv`/`mm`, which were
+        # trained on exactly those games. Choosing a bar against a model's own
+        # training fit is in-sample optimisation wearing a nested costume: the
+        # fit is systematically too good, and it biases selection toward bars
+        # that look strong in-sample. Caught in outside review.
+        #
+        # Now each selection season s is predicted by a model trained only on
+        # seasons < s, so the threshold never sees a prediction from a model
+        # that trained on the game being scored.
+        oof = []
+        for s in sorted(x for x in df.season.unique() if x < S):
+            inner_tr = df[df.season < s]
+            if len(inner_tr) < 300:
+                continue
+            i_mv = train_model(inner_tr[feats + [OPEN]], inner_tr[TGT], inner_tr,
+                               f"wf_{name}_{S}_{s}_mv")
+            i_mm = train_model(inner_tr[feats], inner_tr["home_margin"], inner_tr,
+                               f"wf_{name}_{S}_{s}_mg")
+            d = df[df.season == s].copy()
+            d["mv"] = i_mv.predict(d[feats + [OPEN]].fillna(0))
+            d["dis"] = i_mm.predict(d[feats].fillna(0)) + d[OPEN].values
+            oof.append(d)
+        if not oof:
+            print(f"  {S:<8}{'no out-of-fold data':<16}")
+            continue
+        sel = pd.concat(oof, ignore_index=True)
         best, best_wr = None, -1
         for dbar in DBARS:
             for mbar in MBARS:
