@@ -113,6 +113,53 @@ FBS = {
 _ODDS_TO_KEY = {alias.lower(): key for key, aliases in FBS.items() for alias in aliases}
 
 
+# --- CFBD side of the crosswalk -------------------------------------------
+# CollegeFootballData names schools differently from the odds feed, so the same
+# canonical key has to be reachable from both. 131 of 136 fall out of a slug
+# match; these five do not. Note "San José State" carries an accented e, which
+# fails any naive comparison silently -- exactly the class of bug that made
+# every Rams game vanish on the NFL side.
+CFBD_OVERRIDES = {
+    "Florida Atlantic": "FAU",
+    "Florida International": "FIU",
+    "Massachusetts": "UMASS",
+    "Miami": "MIAMI_FL",          # CFBD calls Miami (OH) "Miami (OH)"
+    "San José State": "SAN_JOSE_ST",
+    "San Jose State": "SAN_JOSE_ST",   # in case the accent is ever dropped
+}
+
+
+def _slug(s: str) -> str:
+    import re
+    s = (s.upper().replace("&", "").replace("(", "").replace(")", "")
+         .replace(".", "").replace("'", ""))
+    return re.sub(r"[^A-Z0-9]+", "_", s).strip("_")
+
+
+def cfbd_to_key(school: str) -> str | None:
+    """CFBD school name -> canonical key, or None if not FBS in our window."""
+    if not school:
+        return None
+    if school in CFBD_OVERRIDES:
+        return CFBD_OVERRIDES[school]
+    s = _slug(school)
+    for cand in (s, s.replace("_STATE", "_ST"), s.replace("STATE", "ST")):
+        if cand in FBS:
+            return cand
+    return None
+
+
+def assert_cfbd_mapped(schools, context: str = "") -> None:
+    """Raise on any CFBD FBS school the crosswalk cannot place."""
+    unmapped = sorted({s for s in schools if s and cfbd_to_key(s) is None})
+    if unmapped:
+        raise SystemExit(
+            f"UNMAPPED CFBD SCHOOLS{' in ' + context if context else ''} "
+            f"({len(unmapped)}):\n  " + "\n  ".join(unmapped) +
+            "\n\nAdd to CFBD_OVERRIDES in cfb_teams.py."
+        )
+
+
 def to_key(odds_name: str) -> str | None:
     """Odds API full_name -> canonical key, or None if not an FBS program."""
     if not odds_name:
