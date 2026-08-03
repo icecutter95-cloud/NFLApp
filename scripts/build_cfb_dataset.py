@@ -102,6 +102,39 @@ def fetch_preseason() -> pd.DataFrame:
     return out
 
 
+def fetch_drive_stats() -> pd.DataFrame:
+    """Per-game field position and finishing, computed from drive logs.
+
+    CFBD exposes fieldPosition and pointsPerOpportunity only as SEASON
+    aggregates, which would carry the outcome of the game being predicted.
+    Drives are per-game, so the same quantities can be built without leaking:
+    a team's average starting field position and how often its drives score,
+    plus the mirror image conceded by its defence.
+    """
+    rows = []
+    for s in SEASONS:
+        for d in get("/drives", year=s, seasonType="regular"):
+            off, dfn = cfbd_to_key(d.get("offense")), cfbd_to_key(d.get("defense"))
+            gid, ytg = d.get("gameId"), d.get("startYardsToGoal")
+            if not (off and dfn and gid) or ytg is None:
+                continue
+            sc = 1.0 if d.get("scoring") else 0.0
+            # startYardsToGoal counts DOWN toward the opponent's line, so a
+            # smaller number is better field position for the offence.
+            rows.append({"game_id": gid, "team": off, "ytg": float(ytg),
+                         "scored": sc, "side": "off"})
+            rows.append({"game_id": gid, "team": dfn, "ytg": float(ytg),
+                         "scored": sc, "side": "def"})
+    d = pd.DataFrame(rows)
+    o = (d[d.side == "off"].groupby(["game_id", "team"])
+         .agg(off_start_fp=("ytg", "mean"), off_score_rate=("scored", "mean"),
+              off_drives=("scored", "size")).reset_index())
+    f = (d[d.side == "def"].groupby(["game_id", "team"])
+         .agg(def_start_fp=("ytg", "mean"), def_score_rate=("scored", "mean"))
+         .reset_index())
+    return o.merge(f, on=["game_id", "team"], how="outer")
+
+
 def fetch_elo() -> pd.DataFrame:
     """Weekly Elo, deliberately lagged one week.
 
@@ -284,11 +317,13 @@ def add_form(d: pd.DataFrame, dates: pd.DataFrame) -> pd.DataFrame:
 ADJ_COLS = ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj"]
 # Rolled as-is. Adjusting every one of these would double the bookkeeping for
 # diminishing return; the NFL pipeline makes the same trade.
+DRIVE_COLS = ["off_start_fp", "def_start_fp", "off_score_rate",
+              "def_score_rate", "off_drives"]
 RAW_COLS = ["off_expl", "def_expl", "off_power", "def_power", "off_stuff",
             "def_stuff", "off_line_yds", "def_line_yds", "off_2nd_lvl",
             "off_open_field", "off_sd_ppa", "off_pd_ppa", "def_sd_ppa",
             "def_pd_ppa", "off_sd_sr", "off_pd_sr", "off_rush_ppa",
-            "off_pass_ppa", "off_plays"]
+            "off_pass_ppa", "off_plays"] + DRIVE_COLS
 ROLLED = ADJ_COLS + RAW_COLS
 
 # Audit (analyze_cfb_features.py) drove the shape below:
@@ -336,7 +371,12 @@ def main():
     print("fetching CFBD games and per-game efficiency...")
     games = fetch_games()
     games["kick_ts"] = pd.to_datetime(games["start_date"], utc=True, errors="coerce")
-    tg = add_form(fetch_team_games(), games[["game_id", "kick_ts"]])
+    tgm = fetch_team_games()
+    dr = fetch_drive_stats()
+    before_d = len(tgm)
+    tgm = tgm.merge(dr, on=["game_id", "team"], how="left")
+    assert len(tgm) == before_d, "drive-stat join fanned out"
+    tg = add_form(tgm, games[["game_id", "kick_ts"]])
     print(f"  {len(games)} FBS-vs-FBS results | {len(tg)} team-game rows")
 
     ROLL_PLUS = FEATURE_COLS + ["games_played", "rest_days"]
@@ -387,10 +427,18 @@ def main():
         before_e = len(df)
         df = df.merge(e, on=["season", "week", f"{side}_team"], how="left")
         assert len(df) == before_e, f"{side} elo join fanned out"
-        first = elo.sort_values("week").groupby(["season", "team"])["elo"].first()
+        # LEAK FIX: week-1 games have no prior-week Elo, and falling back to the
+        # team's earliest available in-season rating would hand them a number
+        # computed AFTER week 1 was played. Fall back to the team's final Elo
+        # from the PRIOR season instead, then to the league median.
+        prior = (elo.sort_values("week").groupby(["season", "team"])["elo"].last()
+                 .reset_index())
+        prior["season"] = prior["season"] + 1
+        prior = prior.set_index(["season", "team"])["elo"]
+        key = pd.Series(list(zip(df["season"], df[f"{side}_team"])), index=df.index)
+        df[f"{side}_elo"] = df[f"{side}_elo"].fillna(key.map(prior))
         df[f"{side}_elo"] = df[f"{side}_elo"].fillna(
-            pd.Series(list(zip(df["season"], df[f"{side}_team"])), index=df.index).map(first))
-        df[f"{side}_elo"] = df[f"{side}_elo"].fillna(df.groupby("season")[f"{side}_elo"].transform("median"))
+            df.groupby("season")[f"{side}_elo"].transform("median"))
 
     # Venue: dome, altitude, and how far the away side travelled. Home venues
     # are inferred from each team's most-used stadium so travel can be measured

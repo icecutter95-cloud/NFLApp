@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore")
 
 from config import DATA_DIR
 from train_models import train_model
-from build_cfb_dataset import FEATURE_COLS, PRESEASON_COLS
+from build_cfb_dataset import FEATURE_COLS, PRESEASON_COLS, INSEASON_COLS
 
 TRAIN = [2020, 2021, 2022, 2023]
 TEST = [2024, 2025]
@@ -45,6 +45,8 @@ FAMILIES = {
     "tendency":    ["off_rush_ppa", "off_pass_ppa", "off_plays"],
     "preseason":   PRESEASON_COLS,
     "context":     ["games_played", "rest_days"],
+    "drives":      ["off_start_fp", "def_start_fp", "off_score_rate", "def_score_rate", "off_drives"],
+    "ratings_new": ["elo", "fpi_prev", "fpi_off_prev", "fpi_def_prev", "fpi_st_prev"],
 }
 STANDALONE = ["neutral_site", "conference_game", "travel_miles", "elev_change", "is_dome"]
 
@@ -52,16 +54,16 @@ STANDALONE = ["neutral_site", "conference_game", "travel_miles", "elev_change", 
 def cols_for(family_keys):
     out = []
     for base in family_keys:
-        if base in PRESEASON_COLS or base in ("games_played", "rest_days"):
+        if base in PRESEASON_COLS or base in INSEASON_COLS or base in ("games_played", "rest_days"):
             out.append(f"diff_{base}")
         else:
-            out += [f"diff_{base}_L{n}" for n in (4, 8)]
+            out += [c for c in (f"diff_{base}_L4", f"diff_{base}_L8")]
     return out
 
 
 def main():
     df = pd.read_parquet(DATA_DIR / "cfb_dataset.parquet")
-    allf = [f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS
+    allf = [f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS + INSEASON_COLS
             + ["games_played", "rest_days"]] + STANDALONE
     allf = [c for c in allf if c in df.columns]
     tr, te = df[df.season.isin(TRAIN)], df[df.season.isin(TEST)]
