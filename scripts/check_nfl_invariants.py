@@ -38,6 +38,18 @@ TABLES = [
     "preseason_predictions", "preseason_lines",
 ]
 
+# line_history is append-only and refresh-odds writes a full 272-row NFL slate
+# on a cron, so an exact-count check false-positives every few hours. What
+# actually matters is that it only GROWS and never contains a non-NFL team --
+# a CFB key like ALABAMA appearing there is the contamination we care about.
+GROW_ONLY = {"line_history"}
+
+NFL_TEAMS = {
+    "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN", "DET",
+    "GB", "HOU", "IND", "JAX", "KC", "LA", "LAC", "LV", "MIA", "MIN", "NE",
+    "NO", "NYG", "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WAS",
+}
+
 
 def counts() -> dict:
     out = {}
@@ -91,8 +103,26 @@ def main():
     for section in ("counts", "track_record"):
         for k, v in old[section].items():
             now = state[section].get(k)
-            if now != v:
+            if now == v:
+                continue
+            if section == "counts" and k in GROW_ONLY:
+                if isinstance(now, int) and isinstance(v, int) and now >= v:
+                    print(f"  note: {k} grew {v} -> {now} (append-only, expected)")
+                    continue
+                drift.append(f"  {section}.{k}: {v} -> {now} (SHRANK)")
+            else:
                 drift.append(f"  {section}.{k}: {v} -> {now}")
+
+    # The check that matters for the append-only table: nothing but NFL teams.
+    for t in GROW_ONLY:
+        try:
+            rows = supabase.table(t).select("home_team").limit(5000).execute()
+            foreign = sorted({r["home_team"] for r in (rows.data or [])
+                              if r["home_team"] and r["home_team"] not in NFL_TEAMS})
+            if foreign:
+                drift.append(f"  {t} contains non-NFL teams: {foreign[:10]}")
+        except Exception as exc:
+            drift.append(f"  {t} team check failed: {str(exc)[:60]}")
 
     # A new key is fine (a table added); a changed value is not.
     if drift:
