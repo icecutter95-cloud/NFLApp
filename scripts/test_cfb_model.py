@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")
 
 from config import DATA_DIR
 from train_models import train_model
-from build_cfb_dataset import FEATURE_COLS
+from build_cfb_dataset import FEATURE_COLS, PRESEASON_COLS
 
 TRAIN, SELECT, HOLDOUT = [2020, 2021, 2022], [2023, 2024], [2025]
 OPEN, TGT = "week_open_spread_home", "week_spread_movement"
@@ -56,7 +56,14 @@ def row(tag, r):
 
 def main():
     df = pd.read_parquet(DATA_DIR / "cfb_dataset.parquet")
-    feats = [f"diff_{c}" for c in FEATURE_COLS] + ["neutral_site", "conference_game"]
+    # In-season form, preseason strength priors, and game context. The first
+    # pass used only the 10 form columns against the NFL model's 57 features and
+    # should not have been reported as a like-for-like test.
+    feats = ([f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS
+              + ["games_played", "rest_days"]]
+             + ["neutral_site", "conference_game", "travel_miles",
+                "elev_change", "is_dome"])
+    feats = [c for c in feats if c in df.columns]
     print(f"CFB dataset: {len(df)} games, {len(feats)} features")
 
     tr = df[df.season.isin(TRAIN)]

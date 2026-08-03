@@ -43,6 +43,67 @@ SEASONS = [2020, 2021, 2022, 2023, 2024, 2025]
 ROLL = [4, 8]
 
 
+def haversine(lat1, lon1, lat2, lon2):
+    """Great-circle miles. CFB travel dwarfs the NFL's -- Hawaii to the east
+    coast is a 5,000-mile round trip, and there is no NFL analogue."""
+    if any(pd.isna(x) for x in (lat1, lon1, lat2, lon2)):
+        return np.nan
+    r = 3958.8
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dp, dl = np.radians(lat2 - lat1), np.radians(lon2 - lon1)
+    a = np.sin(dp / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2) ** 2
+    return float(2 * r * np.arcsin(np.sqrt(a)))
+
+
+def fetch_preseason() -> pd.DataFrame:
+    """Season-level strength priors, all knowable before week 1 kicks off.
+
+    SP+, talent and returning production are taken from the PRIOR season (or
+    the current year for talent/returning, which are published preseason), so
+    nothing here peeks at results from the season being predicted.
+    """
+    rows = {}
+    for s in SEASONS:
+        for r in get("/ratings/sp", year=s - 1):          # prior season only
+            k = cfbd_to_key(r.get("team"))
+            if k:
+                off, dfn = r.get("offense") or {}, r.get("defense") or {}
+                rows.setdefault((s, k), {}).update({
+                    "sp_prev": r.get("rating"), "sp_off_prev": off.get("rating"),
+                    "sp_def_prev": dfn.get("rating")})
+        for r in get("/talent", year=s):                   # published preseason
+            k = cfbd_to_key(r.get("team"))
+            if k:
+                rows.setdefault((s, k), {})["talent"] = r.get("talent")
+        for r in get("/talent", year=s - 1):
+            k = cfbd_to_key(r.get("team"))
+            if k:
+                rows.setdefault((s, k), {})["talent_prev"] = r.get("talent")
+        for r in get("/player/returning", year=s):         # published preseason
+            k = cfbd_to_key(r.get("team"))
+            if k:
+                rows.setdefault((s, k), {})["returning_ppa"] = r.get("percentPPA")
+
+    out = pd.DataFrame([{"season": s, "team": t, **v} for (s, t), v in rows.items()])
+    # A promoted or brand-new FBS program has no prior SP+; league-median is a
+    # fairer stand-in than zero, which would read as "average" on a centred
+    # scale but as "terrible" on SP+.
+    for c in PRESEASON_COLS:
+        if c in out:
+            out[c] = out[c].fillna(out.groupby("season")[c].transform("median"))
+    return out
+
+
+def fetch_venues() -> pd.DataFrame:
+    rows = [{"venue_id": v.get("id"), "lat": v.get("latitude"), "lon": v.get("longitude"),
+             "elevation": v.get("elevation"), "is_dome": int(bool(v.get("dome")))}
+            for v in get("/venues")]
+    d = pd.DataFrame(rows)
+    for c in ("lat", "lon", "elevation"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    return d
+
+
 def get(path, **params):
     r = requests.get(f"{API}{path}", headers=HDRS, params=params, timeout=180)
     r.raise_for_status()
@@ -60,6 +121,7 @@ def fetch_games() -> pd.DataFrame:
                 "neutral_site": int(bool(g.get("neutralSite"))),
                 "conference_game": int(bool(g.get("conferenceGame"))),
                 "start_date": g.get("startDate"),
+                "venue_id": g.get("venueId"),
             })
     df = pd.DataFrame(rows)
     df["home_team"] = df["home_raw"].map(cfbd_to_key)
@@ -140,15 +202,51 @@ def add_form(d: pd.DataFrame, dates: pd.DataFrame) -> pd.DataFrame:
     d["def_sr_adj"] = d["def_sr"] - d["opp_off_sr"]
 
     # Roll the ADJUSTED per-game values, still shifted one back.
+    # min_periods=1, not 2: requiring two prior games silently deleted every
+    # team's first three weeks -- 1,084 of 3,863 games, a quarter of a college
+    # season. One prior game is a weak signal, so `games_played` is carried
+    # alongside and the preseason priors cover the gap.
     for n in ROLL:
         for col in ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj", "off_expl"]:
             d[f"{col}_L{n}"] = (d.groupby(["season", "team"])[col]
-                                .transform(lambda s: s.shift(1).rolling(n, min_periods=2).mean()))
+                                .transform(lambda s: s.shift(1).rolling(n, min_periods=1).mean()))
+
+    d["games_played"] = d.groupby(["season", "team"]).cumcount()
+    # Week 1 has no in-season form at all. Zero is the honest value on these
+    # opponent-adjusted, mean-centred scales, and games_played tells the model
+    # how much weight the number deserves.
+    for n in ROLL:
+        for col in ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj", "off_expl"]:
+            d[f"{col}_L{n}"] = d[f"{col}_L{n}"].fillna(0.0)
+
+    # Rest days from the previous game, ordered by kickoff.
+    prev = d.groupby(["season", "team"])["kick_ts"].shift(1)
+    d["rest_days"] = (d["kick_ts"] - prev).dt.days.fillna(7).clip(0, 21)
     return d
 
 
 FEATURE_COLS = [f"{c}_L{n}" for n in ROLL
                 for c in ["off_ppa_adj", "def_ppa_adj", "off_sr_adj", "def_sr_adj", "off_expl"]]
+
+# Per-team season-level inputs, all knowable BEFORE a season starts. These are
+# what fix the two holes in the first pass:
+#
+#   1. The first version used 12 features against the NFL model's 57, with no
+#      analogue for rest, travel, venue or prior-season strength. It was not a
+#      like-for-like test and should not have been reported as one.
+#   2. Rolling form needs prior games, so weeks 1-3 were dropped entirely --
+#      1,084 of 3,863 games, and in a 12-game season that is a quarter of the
+#      year. A preseason prior covers exactly that gap.
+#
+# College football has a far better preseason prior available than the NFL does:
+# recruiting talent and returning production genuinely forecast strength, where
+# the NFL equivalent (calibrate_prior_trust.py) was a clean negative.
+# NOTE: SP+ exposes offense.pace but never populates it — the column came back
+# 100% null, and since a median fill cannot rescue an all-null column, the
+# dropna below took every row. Excluded rather than carried as dead weight.
+PRESEASON_COLS = ["sp_prev", "sp_off_prev", "sp_def_prev",
+                  "talent", "talent_prev", "returning_ppa"]
+CONTEXT_COLS = ["rest_days", "travel_miles", "elev_change", "is_dome", "games_played"]
 
 
 def main():
@@ -158,11 +256,12 @@ def main():
     tg = add_form(fetch_team_games(), games[["game_id", "kick_ts"]])
     print(f"  {len(games)} FBS-vs-FBS results | {len(tg)} team-game rows")
 
-    keep = ["game_id", "team"] + FEATURE_COLS
+    ROLL_PLUS = FEATURE_COLS + ["games_played", "rest_days"]
+    keep = ["game_id", "team"] + ROLL_PLUS
     home = tg[keep].rename(columns={"team": "home_team",
-                                    **{c: f"home_{c}" for c in FEATURE_COLS}})
+                                    **{c: f"home_{c}" for c in ROLL_PLUS}})
     away = tg[keep].rename(columns={"team": "away_team",
-                                    **{c: f"away_{c}" for c in FEATURE_COLS}})
+                                    **{c: f"away_{c}" for c in ROLL_PLUS}})
     # Joined on game_id + side, so a team's two Week-0/Week-1 rows cannot cross.
     df = (games.merge(home, on=["game_id", "home_team"], how="left")
                 .merge(away, on=["game_id", "away_team"], how="left"))
@@ -188,11 +287,43 @@ def main():
         "merge produced duplicate games"
     print(f"  joined to lines: {len(df)} of {before} results matched a line")
 
-    # Differentials are what the model actually reads.
-    for c in FEATURE_COLS:
-        df[f"diff_{c}"] = df[f"home_{c}"] - df[f"away_{c}"]
+    # Preseason strength priors, joined per side.
+    pre = fetch_preseason()
+    for side in ("home", "away"):
+        p = pre.rename(columns={"team": f"{side}_team",
+                                **{c: f"{side}_{c}" for c in PRESEASON_COLS}})
+        before_p = len(df)
+        df = df.merge(p, on=["season", f"{side}_team"], how="left")
+        assert len(df) == before_p, f"{side} preseason join fanned out"
 
-    df = df.dropna(subset=[f"diff_{c}" for c in FEATURE_COLS])
+    # Venue: dome, altitude, and how far the away side travelled. Home venues
+    # are inferred from each team's most-used stadium so travel can be measured
+    # even for neutral-site games.
+    ven = fetch_venues()
+    df = df.merge(ven, on="venue_id", how="left")
+    homes = (df[df.neutral_site == 0].groupby("home_team")["venue_id"]
+             .agg(lambda s: s.mode().iloc[0] if len(s.mode()) else np.nan))
+    base = ven.set_index("venue_id")[["lat", "lon", "elevation"]]
+    away_base = df["away_team"].map(homes).map(base["lat"]), df["away_team"].map(homes).map(base["lon"])
+    df["travel_miles"] = [haversine(la, lo, gl, gn)
+                          for la, lo, gl, gn in zip(away_base[0], away_base[1], df["lat"], df["lon"])]
+    df["elev_change"] = df["elevation"] - df["away_team"].map(homes).map(base["elevation"])
+    df["is_dome"] = df["is_dome"].fillna(0)
+    for c in ("travel_miles", "elev_change"):
+        df[c] = df[c].fillna(df[c].median())
+
+    # Differentials are what the model actually reads.
+    for c in FEATURE_COLS + PRESEASON_COLS + ["games_played", "rest_days"]:
+        if f"home_{c}" in df and f"away_{c}" in df:
+            df[f"diff_{c}"] = df[f"home_{c}"] - df[f"away_{c}"]
+
+    need = [f"diff_{c}" for c in FEATURE_COLS + PRESEASON_COLS]
+    need = [c for c in need if c in df]
+    # An all-null feature would silently delete the entire dataset through the
+    # dropna below -- exactly what sp_pace_prev did. Name it instead.
+    dead = [c for c in need if df[c].isna().all()]
+    assert not dead, f"features that are 100% null: {dead}"
+    df = df.dropna(subset=need)
     print(f"  with complete form features: {len(df)}")
     for s in sorted(df.season.unique()):
         print(f"    {s}: {int((df.season == s).sum())}")
