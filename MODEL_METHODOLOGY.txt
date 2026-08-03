@@ -333,6 +333,108 @@ PART 4 — CROSS-CUTTING FINDINGS
 
 
 ================================================================================
+PART 4B — RESULTS OF THE OUTSIDE CRITIQUE (added 2026-08-03)
+================================================================================
+
+An outside review of this document produced four checkable claims. All four were
+tested. Results, in order of how much they changed things:
+
+4B.1 A REAL BUG: THE WALK-FORWARD WAS NOT NESTED
+  Thresholds were being chosen by scoring games the models had trained on
+  (the selection set was a subset of the training set). Fixed with genuine
+  out-of-fold selection. This changed the answer materially in both sports,
+  so the previous walk-forward numbers were not trustworthy:
+    NFL  30-23 (56.6%)  ->  36-29 (55.4%)
+    CFB  39-43 (47.6%)  ->  39-25 (60.9%)
+
+4B.2 THE SELECTION OBJECTIVE WAS WRONG FOR COLLEGE
+  The selector maximised win rate with only a 12-bet floor, so it chose rules
+  betting ~16 of ~700 college games a season — discarding the sample-size
+  advantage that was the entire reason to model CFB. Replaced with the Wilson
+  lower bound (rewards rate AND sample) and a candidate set that includes rule
+  SHAPE, so a signal can be dropped rather than only tightened.
+    NFL   36-29 (55.4%)  ->  120-86 (58.3%)  ROI +11.2%
+    CFB   39-25 (60.9%)  ->  679-563 (54.7%) ROI  +4.4%
+  Volume rose and the win rate rose WITH it, meaning the old high-bar
+  selection was cutting good bets rather than concentrating an edge. Every
+  fold now selects a low disagreement bar with NO movement-magnitude
+  requirement, keeping only the direction-agreement condition.
+
+  Clustered uncertainty (bootstrap over season-week blocks, since same-week
+  bets share weather, news and correlated model error):
+    NFL  49 blocks   binomial [51.5, 65.0]   cluster [52.4, 64.3]  CLEARS
+    CFB  59 blocks   binomial [51.9, 57.4]   cluster [51.8, 57.7]  contains BE
+
+4B.3 CLV IS NOT TOXIC — THE PREMISE SURVIVES
+  Compared our bets against GENERIC bets earning the same CLV (back whichever
+  side the line moved toward, every game, no model):
+    NFL   ours 57.8% vs generic 56.5%   z = +0.28   no difference
+    CFB   ours 56.3% vs generic 52.0%   z = +2.20   ours is BETTER
+  The generic curve also validates CLV as a target: cover rate rises with
+  realized CLV in both sports (NFL 50.5/52.0/62.6, CFB 47.9/50.1/55.8).
+  The apparent dissociation was a conflation: REALIZED CLV converts normally,
+  it is high PREDICTED MOVEMENT that underperforms. Those are different
+  variables. This is why dropping the movement bar (4B.2) helped.
+
+4B.4 PROBABILITY-WEIGHTED CLV — THEORY RIGHT, NO MEASURABLE GAIN
+  Built an empirical cover curve conditioned on the closing line. A point is
+  emphatically not uniform:
+    across 3  (-3.5 -> -2.5)  +8.8pp     empty (-6.0 -> -5.0)  +4.0pp
+    across 10 (-10.5 -> -9.5) +5.4pp     empty (-9.0 -> -8.0)  +2.7pp
+    across 7  (-7.5 -> -6.5)  +4.3pp
+  But it does not predict wins better:
+    NFL  corr(points,won) +0.038   corr(prob,won) +0.006   worse
+    CFB  corr(points,won) +0.102   corr(prob,won) +0.101   identical
+  Kept as a reporting unit because it orders CFB buckets monotonically
+  (51.8/52.5/56.6/59.9) where points wobble (52.8/55.4/54.4/58.4).
+
+4B.5 THE MOST IMPORTANT RESULT — LABEL PERMUTATION
+  Ran the ENTIRE pipeline 25 times per sport on data whose team-feature rows
+  were shuffled within season, leaving lines/movement/margins correctly paired
+  so only the model's ability to know anything is destroyed.
+
+    NFL  real 58.3% (206 bets)
+         permuted mean 49.2%  sd 3.4  min 39.5  max 55.2
+         0/25 reached the real result    p <= 0.038    +2.7 sd
+
+    CFB  real 54.7% (1242 bets)
+         permuted mean 50.8%  sd 3.2  min 44.3  max 64.2
+         1/25 reached the real result    p = 0.077     +1.2 sd
+
+  The headline is the permuted SD of ~3.3 points. That is this pipeline's
+  research-multiplicity tax: feature families, threshold sweeps, rule shapes
+  and a per-fold selector can jointly manufacture about +-3.3pp of apparent
+  edge from pure noise. A result needs to clear 50% by roughly 7 points
+  before it means much.
+
+  This RETIRES an earlier headline. The CFB 60.9% on 64 bets, reported during
+  this session as the best result yet, is inside the noise envelope — one
+  permutation of pure noise reached 64.2%. That rule should be treated as dead.
+
+  Caveat: with 25 permutations the smallest achievable p is 1/26 = 0.038, so
+  the NFL figure means "no permutation reached it", not a precise estimate.
+
+4B.6 A CORRECTION MADE DURING THIS ROUND
+  It was reported mid-session that 44% of NFL bets earned negative CLV and won
+  58.9%, implying CLV was not the mechanism. That was wrong: the band lumped
+  ZERO-CLV bets in with negative ones. Split properly:
+    negative CLV  28-23  54.9%  CI [41.2, 68.6]
+    zero CLV      25-14  64.1%  CI [49.0, 79.2]
+    positive CLV  67-49  57.8%  CI [48.8, 66.7]
+  Negative-CLV bets sit on break-even, and by season run 44.4/65.2/47.4 —
+  carried entirely by 2024. There is no anomaly to explain.
+
+CURRENT STANDING AFTER ALL OF THE ABOVE
+  NFL  120-86 (58.3%), ROI +11.2%, cluster CI [52.4, 64.3], permutation
+       p <= 0.038. The strongest position the project has held.
+  CFB  679-563 (54.7%), ROI +4.4%, cluster CI [51.8, 57.7], permutation
+       p = 0.077. Not established.
+  NOTE: the LIVE app still uses |disagreement|>=3 AND |movement|>=0.5 AND
+  agreement. The evidence now says the movement bar should be removed. That
+  change has NOT been made.
+
+
+================================================================================
 PART 5 — WHAT WE MOST WANT CRITIQUED
 ================================================================================
 
