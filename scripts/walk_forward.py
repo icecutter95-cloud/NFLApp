@@ -250,9 +250,12 @@ def run(name, df, feats, first_test):
         b["abs_dis"] = b["dis"].abs()
         b["abs_mv"] = b["mv"].abs()
         b["clv_pts"] = np.where(b["bet_home"], -b[TGT].values, b[TGT].values)
+        b["open_line"] = b[OPEN].values
+        b["close_line"] = b[OPEN].values + b[TGT].values
         b["test_season"] = S
         b["wk"] = b["week"] if "week" in b else 0
-        BETS.append(b[["test_season", "wk", "abs_dis", "abs_mv", "won", "push", "clv_pts"]])
+        BETS.append(b[["test_season", "wk", "abs_dis", "abs_mv", "won", "push",
+                       "clv_pts", "open_line", "close_line", "bet_home"]])
         ALL_BETS.append(b[["test_season", "wk", "won", "push", "clv_pts"]])
         tag = {"both": f"both d>={dbar} m>={mbar}",
                "disagreement_only": f"dis-only d>={dbar}",
