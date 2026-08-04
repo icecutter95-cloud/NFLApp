@@ -1,0 +1,328 @@
+================================================================================
+RESPONSE TO YOUR REVIEW — WHAT WE TESTED, WHAT BROKE, WHERE WE LANDED
+Follow-up to MODEL_METHODOLOGY.txt        2026-08-03
+================================================================================
+
+You reviewed our NFL/CFB betting methodology and made ~20 recommendations. This
+is what happened when we acted on them. Written the same way as the original:
+to expose problems, not to defend work.
+
+Headline: you found a real bug, one of your recommendations produced the single
+most decisive result we have, and two of our own headline claims did not survive
+the testing you prompted.
+
+================================================================================
+1. YOU FOUND A REAL BUG (your section 7)
+================================================================================
+
+You flagged that our "nested" walk-forward threshold selection might not be
+nested. It was not:
+
+    tr  = df[df.season < S]                        # models trained here
+    sel = df[(df.season < S) & (df.season >= S-2)]  # a SUBSET of tr
+
+Thresholds were chosen by scoring games the models had trained on — in-sample
+optimisation wearing a nested costume.
+
+Fixed with genuine out-of-fold selection: each selection season s is predicted
+by a model trained only on seasons < s. This changed the answer materially in
+BOTH sports, so our previously reported walk-forward numbers were not
+trustworthy:
+
+    NFL   30-23 (56.6%)  ->  36-29 (55.4%)
+    CFB   39-43 (47.6%)  ->  39-25 (60.9%)
+
+The CFB swing is large and counterintuitive — the leak was making CFB look
+WORSE. In-sample fit flatters extreme cases, so the leaky selector kept
+choosing a high disagreement bar (d>=7.0) that generalised badly.
+
+================================================================================
+2. POINT BY POINT ON YOUR TEN PRIORITY RECOMMENDATIONS
+================================================================================
+
+(1) REPLACE RAW POINT CLV WITH PROBABILITY-AWARE CLV — DONE, THEORY CONFIRMED,
+    NO MEASURABLE GAIN
+
+Built an empirical cover curve conditioned on the closing line (not a normal
+approximation, which would smooth away the key-number spikes that are the whole
+point). Your premise is correct — a point is emphatically not uniform:
+
+    across 3   (-3.5 -> -2.5)   +8.8pp
+    across 10  (-10.5 -> -9.5)  +5.4pp
+    across 7   (-7.5 -> -6.5)   +4.3pp
+    off 3      (-3.0 -> -2.5)   +4.4pp
+    empty      (-6.0 -> -5.0)   +4.0pp
+    empty      (-9.0 -> -8.0)   +2.7pp
+
+Crossing 3 is worth more than three times crossing nothing. But converting CLV
+to probability did NOT improve it as a predictor of whether a bet wins:
+
+    NFL   corr(points, won) +0.0382    corr(prob, won) +0.0062   WORSE
+    CFB   corr(points, won) +0.1018    corr(prob, won) +0.1014   identical
+
+Kept as the reporting unit because it orders CFB buckets monotonically
+(51.8/52.5/56.6/59.9) where point buckets wobble (52.8/55.4/54.4/58.4).
+
+We also tested your specific proposed mechanism — that big moves happen on big
+spreads where points are cheap. That is NOT the mechanism. Mean |spread| is flat
+across movement bins (4.56/5.05/5.10/4.88, corr -0.024). The real compositional
+difference is KEY-NUMBER PROXIMITY: 67% of low-movement games sit within half a
+point of 3 or 7, against 36% of high-movement games. Low-movement bets earn
+fewer points but in the expensive part of the distribution.
+
+(2) GRADE AGAINST A CONSENSUS/SHARP CLOSE — NOT DONE
+We have multi-book quotes at the weekly OPENER for 2020-2025 (9 books), but not
+at the close, so a historical consensus-close benchmark cannot be built. Live
+capture of 9 books every 15 minutes started this week, so this becomes possible
+for 2026 forward. Agreed it is a real gap.
+
+(3) SEPARATE MOVEMENT OCCURRENCE / DIRECTION / MAGNITUDE (hurdle model) —
+    NOT DONE
+We think this is your best untested idea, specifically because it explains a
+result we had already filed as a dead end: our key-number RESISTANCE feature
+predicts whether a line moves but not which way, and a single regression target
+compresses those. We had concluded "resistance is orthogonal to a directional
+bet"; your framing is that it was being asked to solve the wrong subproblem.
+
+(4) TEST WHETHER HIGH-CONFIDENCE MOVES ARE ADVERSELY SELECTED — DONE. CLV IS
+    NOT TOXIC.
+
+You called this the single most decisive next analysis. We agree, and it came
+back clean. Comparing our bets against GENERIC bets earning the same CLV
+(generic = back whichever side the line moved toward, every game, no model):
+
+                    generic   ours     gap
+    NFL  CLV 0.5-1   50.5%    47.6%
+         CLV 1-2     52.0%    55.8%
+         CLV 2+      62.6%    63.5%
+         POOLED      56.5%    57.8%   +1.3   z = +0.28
+    CFB  CLV 0.5-1   47.9%    55.4%
+         CLV 1-2     50.1%    54.4%
+         CLV 2+      55.8%    58.4%
+         POOLED      52.0%    56.3%   +4.3   z = +2.20
+
+Toxic-CLV hypothesis rejected in both sports. In college our CLV is
+SIGNIFICANTLY BETTER quality than generic CLV. The generic curve also validates
+CLV as a target: cover rate rises with realized CLV in both sports.
+
+This also resolved the CLV/win-rate dissociation, and the resolution is subtler
+than either of our hypotheses. REALIZED CLV converts to wins normally. It is
+high PREDICTED MOVEMENT that underperforms. Those are different variables and
+we had been conflating them.
+
+(5) STANDARDISE CFB BY FIXED TIME-TO-KICKOFF HORIZONS — PARTIALLY DONE
+Diagnosed the problem quantitatively before spending anything: our CFB opener
+sat a median 129 hours before kickoff against the NFL's 169. Added Sunday
+snapshots (the board posts Saturday night), moving it to 147h. Movement captured
+rose from 1.42 to 1.54 pts and the dataset grew 3,574 -> 3,791 games.
+
+The drift you identified is worse than we realised and is structural: the share
+of games whose opener falls on a Sunday runs 1% / 3% / 10% / 27% / 67% / 71%
+across 2020-2025. The Odds API simply did not carry early-week CFB lines in the
+early years. So the prediction task genuinely changes across the sample and we
+cannot fix it retroactively. Your fixed-horizon proposal is the right answer for
+2026 forward; for history, the common-support restriction would cost us most of
+2020-2022.
+
+(6) KEEP OUTCOME PREDICTION, USE CALIBRATED COVER PROBABILITY — NOT DONE
+We did measure the raw comparison (walk-forward):
+    NFL  ours 0.327  market 0.455  gap -0.128  best blend 10% model
+    CFB  ours 0.601  market 0.657  gap -0.047  best blend 10-15% model
+CFB is relatively closer to its market than the NFL is to its own. Neither beats
+the close. We have not built the gating model you propose.
+
+(7) FREEZE PROSPECTIVE 2026 ARMS — NOT DONE. ~5 weeks to Week 1.
+
+(8) CLUSTERED UNCERTAINTY — DONE
+Cluster bootstrap over (season, week) blocks, 3000 resamples:
+    NFL  49 blocks   binomial [51.5, 65.0]   cluster [52.4, 64.3]
+    CFB  59 blocks   binomial [51.9, 57.4]   cluster [51.8, 57.7]
+Interesting side finding: clustering barely moved the NFL interval but widened
+CFB's, i.e. college bets are more correlated within a week than NFL bets.
+
+(9) QB STATE / PERSONNEL CONTINUITY / MICROSTRUCTURE FEATURES — NOT DONE
+We added prior-season SP+, FPI (incl. special teams), recruiting talent,
+returning production and weekly Elo to CFB, which are strength ratings rather
+than the personnel-state features you describe. No QB continuity model.
+
+(10) TURN THE PRODUCT TOWARD QUOTE VALUATION — NOT DONE
+
+ALSO DONE, from your section 17: LABEL PERMUTATION. See section 4 — this turned
+out to be the most important thing in your review.
+
+================================================================================
+3. SOMETHING WE CHANGED THAT YOU DID NOT SUGGEST, AND IT MATTERED MOST
+================================================================================
+
+Our walk-forward selector maximised out-of-fold WIN RATE with only a 12-bet
+floor. For the NFL that is defensible since volume is capped. For college it was
+actively counterproductive: it selected rules betting ~16 of ~700 games a
+season, discarding the sample-size advantage that was the entire strategic
+reason to model CFB.
+
+Replaced with the Wilson LOWER BOUND (rewards rate AND sample; z=1.0, since at
+1.96 only the largest samples ever win), and widened the candidate set to
+include rule SHAPE — both-agree / disagreement-only / movement-only — so the
+selector can drop a signal rather than only tighten a bar.
+
+    NFL   36-29 (55.4%)  ->  120-86 (58.3%)   ROI +11.2%
+    CFB   39-25 (60.9%)  ->  679-563 (54.7%)  ROI  +4.4%
+
+Volume rose AND the win rate rose with it, which means the old high-bar
+selection was cutting good bets rather than concentrating an edge. Every fold
+now selects a low disagreement bar with NO movement-magnitude requirement,
+keeping only direction agreement.
+
+That converged with finding (4) from opposite directions: the movement model's
+MAGNITUDE is useful for predicting movement and bad for choosing bets. We have
+since removed the movement-magnitude bar from the live NFL spread rule.
+
+================================================================================
+4. THE LABEL PERMUTATION TEST — THE MOST DECISIVE RESULT
+================================================================================
+
+Ran the ENTIRE pipeline (nested out-of-fold selection, rule-shape choice,
+evidence-weighted objective, walk-forward grading) 25 times per sport on data
+whose TEAM FEATURE rows were shuffled within season. Lines, movement and margins
+stay correctly paired, so market structure and base rates survive and only the
+model's ability to know anything is destroyed.
+
+    NFL spreads   real 58.3%   permuted mean 49.2%  sd 3.4  max 55.2
+                  0/25 reached it    p <= 0.038    +2.7 sd
+
+    CFB spreads   real 54.7%   permuted mean 50.8%  sd 3.2  max 64.2
+                  1/25 reached it    p = 0.077     +1.2 sd
+
+    NFL totals    real 59.5%   permuted mean 52.6%  sd 5.9  max 63.8
+                  5/25 reached it    p = 0.231     +1.2 sd
+
+The number we consider most valuable in the entire review process is the
+PERMUTED SD of roughly 3.3 points for spreads. That is our pipeline's
+research-multiplicity tax, measured rather than argued about. A result needs to
+clear 50% by about 7 points before it means much.
+
+Two consequences:
+
+  * It RETIRED one of our own headline claims. The CFB 60.9% on 64 bets, which
+    we had reported as the best result of the day, is INSIDE the noise envelope
+    — one permutation of pure noise reached 64.2%.
+
+  * The NFL totals noise floor is 52.6-52.8%, ABOVE the 52.38% break-even. A
+    permuted totals pipeline is profitable on average, because the opener
+    survives as a feature (mean reversion) and a period under-bias persists
+    through shuffling. Totals must clear ~52.7%, not 52.38%, before anything is
+    demonstrated. We had not appreciated this.
+
+Caveat: with 25 permutations the smallest achievable p is 1/26 = 0.038, so the
+NFL figure means "noise never reached it", not a precise estimate.
+
+================================================================================
+5. CORRECTIONS WE HAD TO MAKE TO OUR OWN CLAIMS
+================================================================================
+
+  * We reported that 44% of NFL bets earned NEGATIVE CLV and won 58.9%, and
+    concluded CLV was not the mechanism. WRONG on both counts — the band lumped
+    ZERO-CLV bets in with negative ones. Split properly: negative 28-23 (54.9%,
+    CI [41.2, 68.6]), zero 25-14 (64.1%), positive 67-49 (57.8%). By season the
+    negative-CLV bets run 44.4/65.2/47.4, carried entirely by 2024. No anomaly.
+
+  * We claimed "the dual-signal rule is NFL furniture that does not belong in
+    CFB". Too strong. It hurts at HIGH disagreement bars (d>=7: 53.5% -> 49.4%);
+    at low bars it is fine, and the corrected walk-forward selects a dual rule
+    at d>=2.0 in every fold.
+
+  * We spent much of a session arguing CFB was measurably worse than the NFL.
+    That case rested on the leaky number you caught.
+
+================================================================================
+6. TOTALS — A GAP WE ONLY FOUND BECAUSE OF THIS PROCESS
+================================================================================
+
+Everything above was done on SPREADS. Our live totals rule (|predicted movement|
+>= 1.25, single signal) came from an earlier select/holdout sweep and had never
+been walk-forwarded, nested or permutation-tested.
+
+Parity audit first, since a fair comparison requires equal development:
+  FEATURES  TOTAL_FEATURES is a strict SUPERSET of SPREAD_FEATURES — all 57
+            plus dome, temperature, wind, precipitation. Nothing was applied to
+            spreads and withheld from totals.
+  HARNESS   identical.
+  CAVEAT    our first totals run was too GENEROUS — it supplied a total-points
+            disagreement signal that production does not have.
+
+Both formulations tested:
+    with disagreement (not in production)  80-59  57.6%  p=0.154  +1.3 sd
+    ACTUAL live rule (movement-only)      128-87  59.5%  p=0.231  +1.2 sd
+
+The live totals rule has the best point estimate of anything we tested and its
+binomial CI clears break-even — and noise reaches it one time in five. Adding
+the second signal made it worse (59.5% -> 57.6%), independently confirming an
+earlier finding that the totals disagreement signal does not convert.
+
+================================================================================
+7. WHERE EACH MODEL CURRENTLY STANDS
+================================================================================
+
+                    NFL SPREADS      NFL TOTALS       CFB SPREADS      CFB TOTALS
+Rule                dis>=3 +         movement         dis>=2-3 +       —
+                    direction agrees >=1.25 only      direction agrees
+Signals             2                1                2                —
+Walk-forward        120-86 (58.3%)   128-87 (59.5%)   679-563 (54.7%)  not built
+ROI                 +11.2%           +13.7%           +4.4%            —
+95% CI              [52.4, 64.3]*    [53.0, 66.1]     [51.8, 57.7]*    —
+Permutation         0/25  p<=0.038   5/25  p=0.231    1/25  p=0.077    —
+                    +2.7 sd          +1.2 sd          +1.2 sd
+Noise floor / SD    49.2% / 3.4      52.6% / 5.9      50.8% / 3.2      —
+Sample              1,612 games      1,612 games      3,791 games      —
+In the live app     yes, flagged     yes, flagged     no               no
+VERDICT             VALIDATED        best estimate,   not validated    DOES NOT
+                                     NOT validated                     EXIST
+
+  * clustered (season-week block bootstrap); others binomial
+
+CFB totals genuinely do not exist — our college line backfill requested spreads
+only, so there are no totals lines, no model and no tests.
+
+Only the top-left cell survives everything. NFL totals have the highest win rate
+and ROI of the four and still fail, because their noise floor is above
+break-even and their noise SD (5.9) is nearly double the spreads'.
+
+================================================================================
+8. WHAT WE ARE STUCK ON — WHERE WE WANT YOUR VIEW
+================================================================================
+
+1. Is the NFL spread result now strong enough to bet, or is 25 permutations and
+   206 walk-forward bets still too thin? What would you require?
+
+2. The totals noise floor being ABOVE break-even (52.6-52.8%) surprised us. Is
+   that a genuine property of totals markets in this era, an artefact of keeping
+   the opener as a model feature, or a sign our permutation scheme is wrong for
+   totals specifically?
+
+3. We now have a measured "research multiplicity tax" of ~3.3pp for spreads and
+   ~5.9pp for totals. Is there a principled way to USE that number — e.g. as a
+   prior, a required margin, or a shrinkage factor — rather than just as a
+   sanity check?
+
+4. Our selector demonstrably failed once: in the totals run it chose the
+   two-signal rule out-of-fold and the simpler rule beat it in test. Given that,
+   how much should we trust the same selector's choice on spreads, which is now
+   live?
+
+5. CFB opener drift is structural (Sunday coverage 1% -> 71% across 2020-2025)
+   and cannot be fixed retroactively. Restrict to common support and lose most
+   of 2020-2022, model horizon explicitly, or accept the drift and weight?
+
+6. Should we stop adding and freeze? We are ~5 weeks from NFL Week 1. Our
+   instinct is to freeze the NFL spread rule, drop the "qualifying" flag from
+   totals (visible and tracked, not recommended), keep CFB out of the app
+   entirely, and let 2026 produce one clean prospective record. Is that the
+   right call, or is there something you would insist on testing first?
+
+7. Given (4) in section 2 showed our CLV is of normal-to-better quality, and the
+   permutation shows the spread rule survives noise — what is the strongest
+   remaining argument that this whole thing is still a mirage?
+
+================================================================================
+END
+================================================================================
