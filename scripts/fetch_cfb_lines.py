@@ -36,6 +36,7 @@ Usage:
     python fetch_cfb_lines.py 2020 2025        # inclusive range
 """
 
+import os
 import sys
 import time
 import warnings
@@ -49,7 +50,9 @@ from config import DATA_DIR, ODDS_API_KEY
 from cfb_teams import to_key, is_fbs
 
 HIST_URL = "https://api.the-odds-api.com/v4/historical/sports/americanfootball_ncaaf/odds"
-MARKETS = "spreads"
+# Market is selectable so totals can be backfilled without refetching spreads.
+MARKET = os.environ.get("CFB_MARKET", "spreads")
+MARKETS = MARKET
 REGIONS = "us"
 BOOKMAKER = "draftkings"
 CREDITS_PER_CALL = 10 * len(MARKETS.split(",")) * len(REGIONS.split(","))
@@ -107,17 +110,20 @@ def fetch(ts) -> tuple:
         if not (is_fbs(home_raw) and is_fbs(away_raw)):
             skipped_non_fbs += 1
             continue
-        spread = None
+        value = None
         for bk in g.get("bookmakers", []):
             if bk.get("key") != BOOKMAKER:
                 continue
             for mk in bk.get("markets", []):
-                if mk.get("key") != "spreads":
+                if mk.get("key") != MARKET:
                     continue
                 for oc in mk.get("outcomes", []):
-                    if oc.get("name") == home_raw:
-                        spread = oc.get("point")
-        if spread is None:
+                    # Spreads are quoted per team; totals as Over/Under, where
+                    # both sides carry the same number.
+                    want = home_raw if MARKET == "spreads" else "Over"
+                    if oc.get("name") == want:
+                        value = oc.get("point")
+        if value is None:
             continue
         rows.append({
             "snapshot_at": payload.get("timestamp"),
@@ -126,7 +132,7 @@ def fetch(ts) -> tuple:
             "commence_time": g.get("commence_time"),
             # The Odds API already quotes the standard convention: negative
             # means the home team is favoured.
-            "spread_home": spread,
+            "spread_home": value,
         })
     return rows, r.headers.get("x-requests-remaining"), skipped_non_fbs
 
@@ -180,7 +186,8 @@ def main():
         if dry:
             continue
 
-        out = DATA_DIR / f"cfb_lines_{season}.parquet"
+        suffix = "" if MARKET == "spreads" else f"_{MARKET}"
+        out = DATA_DIR / f"cfb_lines{suffix}_{season}.parquet"
         # Progress is always read from disk. An earlier backfill in this project
         # gated its checkpoint on an in-memory flag and each save wiped the last.
         done = set()
@@ -208,7 +215,7 @@ def main():
         if out.exists():
             raw = pd.read_parquet(out)
             oc = derive_open_close(raw)
-            oc_path = DATA_DIR / f"cfb_open_close_{season}.parquet"
+            oc_path = DATA_DIR / f"cfb_open_close{suffix}_{season}.parquet"
             oc.to_parquet(oc_path, index=False)
             print(f"  {season}: {len(raw)} quotes -> {len(oc)} games with open+close")
             if not oc.empty:
