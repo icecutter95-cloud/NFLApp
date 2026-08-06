@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap, LineChart, Target, Eye } from 'lucide-react'
+import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap, LineChart, Target, Eye, GraduationCap } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 export default function Header({
@@ -185,6 +185,7 @@ export default function Header({
             Edges shows the ATS model, whose picks are currently gated off. */}
         {navBtn('clv',         <LineChart size={12} />,     'CLV')}
         {navBtn('model',       <Target size={12} />,        'Model')}
+        {navBtn('cfb',         <GraduationCap size={12} />, 'CFB')}
         {navBtn('edges',       null,                        'Edges')}
         {navBtn('performance', <BarChart2 size={12} />,    'My Bets')}
         {navBtn('backtest',    <FlaskConical size={12} />, 'Backtest')}

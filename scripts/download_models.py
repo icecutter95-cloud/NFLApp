@@ -28,7 +28,19 @@ REQUIRED_MODEL_FILES = ["spread_model.joblib", "total_model.joblib"]
 OPTIONAL_MODEL_FILES = ["spread_calibration.joblib", "total_calibration.joblib",
                         "movement_model.joblib", "movement_features.joblib",
                         "margin_model.joblib", "margin_features.joblib",
-                        "total_movement_model.joblib", "total_movement_features.joblib"]
+                        "total_movement_model.joblib", "total_movement_features.joblib",
+                        "nfl_residual_model.joblib",
+                        "nfl_residual_features.joblib",
+                        "nfl_margin_shadow_model.joblib",
+                        "nfl_margin_shadow_features.joblib",
+                        "nfl_total_movement_model.joblib",
+                        "nfl_total_movement_features.joblib",
+                        "cfb_movement_model.joblib",
+                        "cfb_movement_features.joblib",
+                        "cfb_margin_model.joblib",
+                        "cfb_margin_features.joblib",
+                        "cfb_total_residual_model.joblib",
+                        "cfb_total_residual_features.joblib"]
 
 for filename in REQUIRED_MODEL_FILES:
     print(f"Downloading {filename}...")

@@ -53,7 +53,13 @@ TOTALS_MOVE_THRESHOLD = 1.25
 # deliberately no movement-magnitude bar -- see the note in the loop below.
 # Totals are unchanged: nothing in the spread analysis transfers to them, and
 # they still ride on movement alone.
-SPREAD_DISAGREE_MIN = 3.0
+SPREAD_DISAGREE_MIN = 3.0     # shadow rule only, kept for comparison
+# PRIMARY spread rule as of 2026-08-04: the residual model, which predicts
+# home_margin + week_open_spread_home -- how wrong the opener is -- instead of
+# predicting the game and subtracting. It beat the old approach at every
+# threshold, clears break-even on a clustered interval, and sits +3.5 sd above
+# its permutation null against the old rule's +2.7.
+RESIDUAL_MIN = 1.5
 
 
 def main():
@@ -81,6 +87,14 @@ def main():
     if tm_path.exists():
         total_model = joblib.load(tm_path)
         total_feats = joblib.load(MODELS_DIR / "total_movement_features.joblib")
+
+    res_model = res_feats = None
+    rp = MODELS_DIR / "nfl_residual_model.joblib"
+    if rp.exists():
+        res_model = joblib.load(rp)
+        res_feats = joblib.load(MODELS_DIR / "nfl_residual_features.joblib")
+    else:
+        print("  WARNING: no nfl_residual_model.joblib — spreads cannot qualify")
 
     margin_model = margin_feats = None
     mm_path = MODELS_DIR / "margin_model.joblib"
@@ -120,6 +134,12 @@ def main():
     else:
         disagreement = np.full(len(feats), np.nan)
 
+    if res_model is not None:
+        assert_feature_parity(feats, res_feats, "residual")
+        residual = res_model.predict(feats[res_feats].fillna(0))
+    else:
+        residual = np.full(len(feats), np.nan)
+
     if total_model is not None:
         assert_feature_parity(feats, total_feats, "total_movement")
         tot_preds = total_model.predict(feats[total_feats].fillna(0))
@@ -131,7 +151,7 @@ def main():
     existing = supabase.table("line_predictions").select("game_id, bet_type")         .eq("season", season).eq("week", week).execute()
     already = {(r["game_id"], r["bet_type"]) for r in (existing.data or [])}
 
-    def make_row(gid, g, bet_type, opener, movement, side, disagree):
+    def make_row(gid, g, bet_type, opener, movement, side, disagree, resid=None):
         return {
             "game_id": gid,
             "bet_type": bet_type,
@@ -150,6 +170,7 @@ def main():
             # so over/under both sit at the same line.
             "taken_line": (-opener if (bet_type == "spread" and side == "away") else opener),
             "margin_disagreement": disagree,
+            "residual_pred": resid,
         }
 
     # game_id must match line_open_close (The Odds API event id) so the view can
@@ -163,9 +184,15 @@ def main():
             skipped += 1
         else:
             opener = float(g["dk_spread"])
-            rows.append(make_row(gid, g, "spread", opener, float(pred),
-                                 "home" if pred < 0 else "away",
-                                 None if np.isnan(dis) else round(float(dis), 3)))
+            rv = residual[i]
+            # The residual model picks the side: positive means it expects the
+            # home side to beat the opener. The movement model is still logged
+            # (it powers the shadow rule and the direction indicator).
+            side = ("home" if rv > 0 else "away") if not np.isnan(rv) else (
+                   "home" if pred < 0 else "away")
+            rows.append(make_row(gid, g, "spread", opener, float(pred), side,
+                                 None if np.isnan(dis) else round(float(dis), 3),
+                                 None if np.isnan(rv) else round(float(rv), 3)))
 
         # Totals ride on movement alone -- the disagreement signal is worthless
         # there (49-51% at every threshold), so margin_disagreement stays null.
@@ -185,20 +212,14 @@ def main():
     for r in rows:
         d = r["margin_disagreement"]
         if r["bet_type"] == "spread":
-            # The movement MAGNITUDE bar was removed 2026-08-03. It required
-            # |predicted movement| >= 0.5, and the evidence says it was cutting
-            # good bets rather than filtering bad ones:
-            #   * a walk-forward selector scoring rules by the Wilson lower
-            #     bound chose "no magnitude bar" in every recent fold
-            #   * removing it took the NFL from 36-29 (55.4%) to 120-86 (58.3%)
-            #     -- volume rose AND the rate rose with it
-            #   * the rule without it passes a 25-run label-permutation test
-            #     (0/25 noise runs reached 58.3%); the tighter rule does not
-            # The movement model still decides the SIDE and supplies the
-            # direction-agreement test. Only the size requirement is gone.
-            q = (d is not None and abs(d) >= SPREAD_DISAGREE_MIN
-                 and ((d > 0) == (r["predicted_movement"] < 0)))
-            extra = f"disagree {0.0 if d is None else d:+6.2f}  "
+            # PRIMARY rule: the residual model's call on how wrong the opener
+            # is. Read from the row rather than a loop variable -- an earlier
+            # version referenced `rv` from the enclosing scope, which silently
+            # printed the LAST game's residual against every row.
+            rv = r.get("residual_pred")
+            q = rv is not None and abs(rv) >= RESIDUAL_MIN
+            extra = (f"resid {rv:+6.2f}  " if rv is not None
+                     else f"disagree {0.0 if d is None else d:+6.2f}  ")
         else:
             q = abs(r["predicted_movement"]) >= TOTALS_MOVE_THRESHOLD
             extra = " " * 17
