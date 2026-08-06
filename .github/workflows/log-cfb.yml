@@ -38,7 +38,14 @@ jobs:
           cache-dependency-path: requirements-ci.txt
 
       - name: Install dependencies
-        run: pip install -r requirements-ci.txt
+        # `requests` is appended here rather than added to requirements-ci.txt
+        # because that file's hash is the pip cache key for the NFL workflows.
+        # Editing it would force a cold resolve of unpinned packages (nfl-data-py,
+        # pandas, xgboost) in the pipeline that produces every validated number we
+        # have. The CFB fetchers call CFBD and the Odds API with requests directly;
+        # the NFL path goes through the supabase client, which is why this only
+        # surfaced now.
+        run: pip install -r requirements-ci.txt requests
 
       - name: Download models from Supabase Storage
         env:
