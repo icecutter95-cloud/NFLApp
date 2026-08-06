@@ -54,6 +54,12 @@ HDRS = {"Authorization": f"Bearer {os.environ['CFBD_API_KEY']}"}
 SEASON = 2026
 PRIOR = SEASON - 1
 
+# Totals are logged only once teams have played enough for the rolling form
+# features (L3/L4 windows) to hold real values. Before that they are zero, which
+# biases a level-valued prediction downward. Week 4 is the first week every L3
+# window is fully populated. Spreads are unaffected and log from week 1.
+TOTALS_MIN_WEEK = 4
+
 
 def get(path, **params):
     r = requests.get(f"{API}{path}", headers=HDRS, params=params, timeout=120)
@@ -185,6 +191,7 @@ def main():
         X[c] = games[c].astype(float)
 
     rows = []
+    withheld = 0
     for kind, model_name, line_col, market in [
             ("spread", "cfb_movement", "spread_home", "spread"),
             ("total", "cfb_total_residual", "total", "total")]:
@@ -222,6 +229,20 @@ def main():
                     "predicted_side": side,
                     "taken_line": float(line) if side == "home" else -float(line)})
             else:
+                # Withheld until teams have real form. Rolling features are zero
+                # in week 1 (see above), and a total is a LEVEL rather than a
+                # difference, so those zeros do not cancel the way they do for
+                # spreads -- they drag every prediction down. Measured on week-1
+                # training games the model calls over 12% of the time against a
+                # true rate of 38%, and on this live board it called 68 of 73
+                # games under. That is a broken output, not a weak edge, so it
+                # is suppressed at the source rather than deleted after the fact.
+                # Deleting rows by hand did not hold: the 3-hourly cron simply
+                # rewrote them.
+                wk = g.get("week")
+                if pd.isna(wk) or int(wk) < TOTALS_MIN_WEEK:
+                    withheld += 1
+                    continue
                 side = "over" if pred[i] > 0 else "under"
                 rows.append({
                     "game_id": g["game_id"], "bet_type": "total", "season": SEASON,
@@ -235,6 +256,9 @@ def main():
 
     ns = sum(1 for r in rows if r["bet_type"] == "spread")
     print(f"  {len(rows)} predictions ({ns} spread, {len(rows)-ns} total)")
+    if withheld:
+        print(f"  {withheld} totals withheld (week < {TOTALS_MIN_WEEK}, "
+              f"rolling form not yet populated)")
     for r in rows[:10]:
         v = r["projected_value"]
         print(f"    [{r['bet_type'][:3].upper()}] {r['away_team']:>16} @ "
