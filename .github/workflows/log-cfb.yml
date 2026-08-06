@@ -1,0 +1,62 @@
+name: Log CFB Predictions
+
+# College football: pull the current board and freeze a prediction per game.
+#
+# Separate workflow from log-clv.yml on purpose. That job feeds line_history ->
+# line_open_close -> clv_tracking, which is where every validated NFL number
+# comes from. Keeping college on its own path means a CFBD outage or a crosswalk
+# gap can never take down the one market with a demonstrated edge.
+#
+# Every 3 hours, matching the NFL cadence and for the same reason: a pick is
+# worth ~+1.55 CLV in its first six hours and roughly nothing after three days,
+# so a board that posts just after a run must not sit unlogged for long.
+#
+# Predictions are frozen on first sight — cfb_predictions is keyed on
+# (game_id, bet_type) — so re-running is harmless.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 */3 * * *'
+
+jobs:
+  log-cfb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-ci.txt
+
+      - name: Download models from Supabase Storage
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/download_models.py
+
+      - name: Fetch current CFB odds
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python scripts/fetch_cfb_odds.py
+
+      - name: Log CFB predictions
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python scripts/log_cfb_predictions.py

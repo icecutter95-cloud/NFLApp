@@ -34,6 +34,22 @@ MODEL_FILES = [
     "movement_model.joblib", "movement_features.joblib",
     "margin_model.joblib", "margin_features.joblib",
     "total_movement_model.joblib", "total_movement_features.joblib",
+    # Added 2026-08-04. NFL spreads now run the residual model; the old
+    # rule's margin model ships too so it can run as a shadow arm. The cfb_*
+    # artifacts power the college tab, which flags nothing as a bet.
+    "nfl_residual_model.joblib",
+    "nfl_residual_features.joblib",
+    "nfl_margin_shadow_model.joblib",
+    "nfl_margin_shadow_features.joblib",
+    "nfl_total_movement_model.joblib",
+    "nfl_total_movement_features.joblib",
+    "cfb_movement_model.joblib",
+    "cfb_movement_features.joblib",
+    "cfb_margin_model.joblib",
+    "cfb_margin_features.joblib",
+    "cfb_total_residual_model.joblib",
+    "cfb_total_residual_features.joblib",
+
 ]
 
 for filename in MODEL_FILES:

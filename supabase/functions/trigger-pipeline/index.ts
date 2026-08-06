@@ -11,6 +11,7 @@
  *   { action: 'update-metrics', season: number }
  *   { action: 'log-clv',        season?: number, week?: number }  // blank = auto-detect
  *   { action: 'fetch-results',  season?: number }                 // blank = current season
+ *   { action: 'log-cfb' }                                        // college football, no inputs
  */
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
@@ -44,6 +45,7 @@ serve(async (req) => {
       'update-metrics': 'update-metrics.yml',
       'log-clv':        'log-clv.yml',
       'fetch-results':  'fetch-results.yml',
+      'log-cfb':        'log-cfb.yml',
       'score-week':     'score-week.yml',
     }
     const workflow = WORKFLOWS[action] ?? 'score-week.yml'
@@ -55,6 +57,9 @@ serve(async (req) => {
       inputs = { season: season ? String(season) : '', week: week ? String(week) : '' }
     } else if (action === 'fetch-results') {
       inputs = { season: season ? String(season) : '' }
+    } else if (action === 'log-cfb') {
+      // The college logger reads the current board; it takes no inputs.
+      inputs = {}
     } else {
       inputs = { season: String(season), week: String(week) }
     }
