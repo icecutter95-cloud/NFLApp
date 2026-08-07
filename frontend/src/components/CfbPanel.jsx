@@ -12,7 +12,14 @@ import { supabase } from '../lib/supabase'
 // Totals are absent on purpose: the model called 68 of 73 games UNDER, and
 // checking against training data showed it predicts over on 12% of week-1 games
 // where the truth is 38%. That is a bias, not a signal, so totals return once
-// teams have games played and the rolling features actually exist.
+// teams have games played and the rolling features actually exist. The logger
+// enforces this by inspecting whether the rolling features are populated, so
+// they come back on their own rather than on a remembered date.
+//
+// Spreads only carry a side when the movement and margin models agree, which is
+// the configuration the 54.7% walk-forward number was measured on. Roughly a
+// third of the board splits; those rows still show both models' numbers but
+// deliberately show no pick.
 
 const fmtLine = v => v == null ? '—' : v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1)
 
@@ -154,7 +161,11 @@ export default function CfbPanel({ season }) {
           {visible.map(r => {
             const key = `${r.game_id}_${r.bet_type}`
             const isOpen = open === key
-            const side = r.predicted_side === 'home' ? r.home_team : r.away_team
+            // A null side means the movement and margin models point opposite
+            // ways, which is the tested rule declining to pick. Ternary on
+            // 'home' alone would silently render the AWAY team as the pick.
+            const side = r.predicted_side == null ? null
+                       : r.predicted_side === 'home' ? r.home_team : r.away_team
             const dis = r.margin_disagreement
             return (
               <div key={key}>
@@ -174,7 +185,9 @@ export default function CfbPanel({ season }) {
                     dis == null ? 'text-gray-600'
                     : Math.abs(dis) >= 3 ? 'text-gray-200 font-medium' : 'text-gray-500'
                   }`}>{dis == null ? '—' : fmtLine(dis)}</div>
-                  <div className="text-right text-xs text-gray-300 truncate">{side}</div>
+                  <div className={`text-right text-xs truncate ${
+                    side ? 'text-gray-300' : 'text-gray-600 italic'
+                  }`}>{side ?? 'models split'}</div>
                 </div>
 
                 {isOpen && (

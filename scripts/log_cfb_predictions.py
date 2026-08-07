@@ -54,12 +54,6 @@ HDRS = {"Authorization": f"Bearer {os.environ['CFBD_API_KEY']}"}
 SEASON = 2026
 PRIOR = SEASON - 1
 
-# Totals are logged only once teams have played enough for the rolling form
-# features (L3/L4 windows) to hold real values. Before that they are zero, which
-# biases a level-valued prediction downward. Week 4 is the first week every L3
-# window is fully populated. Spreads are unaffected and log from week 1.
-TOTALS_MIN_WEEK = 4
-
 
 def get(path, **params):
     r = requests.get(f"{API}{path}", headers=HDRS, params=params, timeout=120)
@@ -190,6 +184,14 @@ def main():
               "elev_change", "is_dome"):
         X[c] = games[c].astype(float)
 
+    # Are the rolling-form features actually carrying information? Right now the
+    # block above hardcodes every one of them to 0.0, so this is False for every
+    # game in every week. Detecting it rather than hardcoding a week number means
+    # totals switch back on by themselves the moment in-season form is wired in,
+    # and cannot be re-enabled by the calendar alone.
+    form_cols = [f"diff_{c}" for c in FEATURE_COLS if f"diff_{c}" in X.columns]
+    form_populated = bool(X[form_cols].abs().to_numpy().sum() > 0) if form_cols else False
+
     rows = []
     withheld = 0
     for kind, model_name, line_col, market in [
@@ -217,7 +219,20 @@ def main():
             if pd.isna(line):
                 continue
             if market == "spread":
-                side = "home" if pred[i] < 0 else "away"
+                # The tested CFB spread rule is DIRECTION AGREEMENT between the
+                # two models (see build_production_models.py) -- that is the
+                # configuration the 54.7% walk-forward figure was measured on.
+                # This previously took the movement model's sign alone, which is
+                # a different and untested rule: the two disagree on roughly a
+                # third of the board, and the movement model's median |pred| here
+                # is 0.22 points, so on its own it was mostly signing noise.
+                # Rows are still written for every game so the panel can show
+                # what both models think; games without agreement simply carry no
+                # side rather than a coin flip dressed as a pick.
+                dis = float(margin[i] + line)
+                mv_side = "home" if pred[i] < 0 else "away"
+                dis_side = "home" if dis > 0 else "away"
+                side = mv_side if mv_side == dis_side else None
                 rows.append({
                     "game_id": g["game_id"], "bet_type": "spread", "season": SEASON,
                     "week": int(g["week"]) if pd.notna(g.get("week")) else None,
@@ -227,7 +242,8 @@ def main():
                     "projected_value": round(float(margin[i]), 2),
                     "margin_disagreement": round(float(margin[i] + line), 3),
                     "predicted_side": side,
-                    "taken_line": float(line) if side == "home" else -float(line)})
+                    "taken_line": None if side is None else
+                                  (float(line) if side == "home" else -float(line))})
             else:
                 # Withheld until teams have real form. Rolling features are zero
                 # in week 1 (see above), and a total is a LEVEL rather than a
@@ -239,8 +255,7 @@ def main():
                 # is suppressed at the source rather than deleted after the fact.
                 # Deleting rows by hand did not hold: the 3-hourly cron simply
                 # rewrote them.
-                wk = g.get("week")
-                if pd.isna(wk) or int(wk) < TOTALS_MIN_WEEK:
+                if not form_populated:
                     withheld += 1
                     continue
                 side = "over" if pred[i] > 0 else "under"
@@ -256,14 +271,26 @@ def main():
 
     ns = sum(1 for r in rows if r["bet_type"] == "spread")
     print(f"  {len(rows)} predictions ({ns} spread, {len(rows)-ns} total)")
+    agree = sum(1 for r in rows
+                if r["bet_type"] == "spread" and r["predicted_side"] is not None)
+    if ns:
+        print(f"  {agree}/{ns} spreads have a side (movement and margin models "
+              f"agree); {ns-agree} shown without a pick")
     if withheld:
-        print(f"  {withheld} totals withheld (week < {TOTALS_MIN_WEEK}, "
-              f"rolling form not yet populated)")
+        print(f"  {withheld} totals withheld (rolling form all zero — "
+              f"a level-valued prediction cannot be trusted without it)")
+    # The side is decided by predicted_movement (which way the line is expected
+    # to go), not by projected_value (the margin model's view of the game). Those
+    # are two different models and they disagree often, so print the one that
+    # actually drives the pick -- showing only the margin made every line look
+    # like the sign was inverted.
     for r in rows[:10]:
-        v = r["projected_value"]
+        mv = r["predicted_movement"]
+        drv = f"move {mv:+6.2f}" if mv is not None else "resid    n/a"
         print(f"    [{r['bet_type'][:3].upper()}] {r['away_team']:>16} @ "
-              f"{r['home_team']:<16} line {r['open_line']:+7.1f}  "
-              f"model {v:+7.2f}  -> {r['predicted_side']}")
+              f"{r['home_team']:<16} line {r['open_line']:+7.1f}  {drv}  "
+              f"margin {r['projected_value']:+7.2f}  -> "
+              f"{r['predicted_side'] or 'no pick (models split)'}")
 
     if dry:
         print("  --dry-run: nothing written")
