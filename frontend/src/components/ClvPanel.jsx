@@ -143,6 +143,68 @@ function Field({ label, value, color, title }) {
   )
 }
 
+// Put the pick in football terms.
+//
+// The panel shows the opener, the projected close and the margin disagreement,
+// and on a game like NE @ SEA all three read as pointing at the home side while
+// the pick is the away side. The number that actually decides a spread is the
+// residual, which was not displayed at all. The residual predicts
+// (home_margin + open_line), so subtracting the opener recovers the margin it
+// implies and the pick stops looking arbitrary.
+function whySpread(row) {
+  const r = row.residual_pred
+  if (r == null || row.open_line == null) return null
+  const margin = r - row.open_line            // model's expected home margin
+  const team = m => (m > 0 ? row.home_team : row.away_team)
+  const by = m => Math.abs(m).toFixed(1)
+  return {
+    pick: r > 0 ? row.home_team : row.away_team,
+    model: Math.abs(margin) < 0.05
+      ? 'a dead-even game'
+      : `${team(margin)} by ${by(margin)}`,
+    // open_line is the home spread: negative means home is laid that many points.
+    need: Math.abs(row.open_line) < 0.05
+      ? 'a pick-em'
+      : `${team(-row.open_line)} by ${by(row.open_line)}`,
+    edge: Math.abs(r).toFixed(1),
+  }
+}
+
+// CLV is directional, so "bet early" is only right half the time. A home or
+// under bet profits when the number falls; an away or over bet profits when it
+// rises. If the projected drift is toward the side we took, the number gets
+// BETTER by waiting, and hurrying costs money.
+const DRIFT_NOISE = 0.25
+
+function timingCall(row) {
+  const mv = row.predicted_movement
+  const side = row.predicted_side
+  if (mv == null || !side) return null
+  // Totals pick the side FROM the predicted movement (over when the model
+  // expects the number to rise), so the drift is against the bet by
+  // construction and this test is always 'take it now'. True, but tautological
+  // -- say so rather than dressing a certainty up as a per-bet read. Spreads
+  // are informative because the side comes from the residual model while the
+  // drift comes from the movement model, which are independent.
+  if (row.bet_type === 'total')
+    return { kind: 'now', text: 'Totals are picked in the direction the number is '
+      + 'expected to move, so the number is always best taken early. This is '
+      + 'structural, not a read on this particular game.' }
+  const takesLow = side === 'home' || side === 'under'
+  const against = (mv < 0) === takesLow
+  const pts = Math.abs(mv).toFixed(1)
+  // Below half a point there is nothing to act on -- the market trades in
+  // half-point ticks -- but still say which way it leans rather than calling it
+  // featureless, because the direction is the part that decides now-vs-wait.
+  if (Math.abs(mv) < DRIFT_NOISE)
+    return { kind: 'flat', text: `Projected drift is only ${pts} `
+      + `${against ? 'against' : 'in favour of'} this side, below the half-point `
+      + `the market trades in, so timing is close to neutral.` }
+  return against
+    ? { kind: 'now',  text: `The number is projected to move about ${pts} against this side, so taking it now is the play.` }
+    : { kind: 'wait', text: `The number is projected to drift about ${pts} in this side's favour, so waiting will likely get a better price than betting now.` }
+}
+
 // Everything we know about one line, opened up: how the model got here, where
 // the number has travelled, and what every book is currently offering.
 function RowDetail({ row, books, quotes, loading, age }) {
@@ -150,6 +212,8 @@ function RowDetail({ row, books, quotes, loading, age }) {
   const fmt = isTotal ? fmtNum : fmtLine
   const side = row.predicted_side
   const best = bestFor(row, books)
+  const why = isTotal ? null : whySpread(row)
+  const timing = timingCall(row)
 
   // Which column of the book table is the side we are actually on.
   const rank = q => {
@@ -185,6 +249,29 @@ function RowDetail({ row, books, quotes, loading, age }) {
         </div>
       )}
 
+      {(why || timing) && (
+        <div className="text-xs leading-relaxed bg-gray-900/50 border-l-2 border-gray-700 pl-3 py-2">
+          {why && (
+            <div className="text-gray-300">
+              <span className="text-gray-500">Why {why.pick}: </span>
+              the model has <span className="text-gray-100">{why.model}</span>, but the opener
+              needs <span className="text-gray-100">{why.need}</span> — a{' '}
+              <span className="text-gray-100">{why.edge}-point</span> gap, and that gap is what
+              qualifies the bet.
+            </div>
+          )}
+          {timing && (
+            <div className={`${why ? 'mt-1.5' : ''} ${
+              timing.kind === 'wait' ? 'text-amber-300/90'
+              : timing.kind === 'now' ? 'text-green-400/90' : 'text-gray-500'
+            }`}>
+              {timing.kind === 'wait' ? 'Consider waiting: ' : timing.kind === 'now' ? 'Take it now: ' : 'Timing: '}
+              <span className="text-gray-300">{timing.text}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Field label="Opened" value={fmt(row.open_line)} />
         <Field label="Projected close" value={fmt(row.projected_close)}
@@ -203,13 +290,22 @@ function RowDetail({ row, books, quotes, loading, age }) {
         />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 border-t border-gray-800/50">
+      <div className={`grid grid-cols-2 ${isTotal ? 'md:grid-cols-3' : 'md:grid-cols-5'} gap-3 pt-1 border-t border-gray-800/50`}>
         <Field label="Predicted move" value={fmtLine(row.predicted_movement)} />
+        {!isTotal && (
+          <Field
+            label="Model edge (residual)"
+            value={row.residual_pred == null ? '—' : fmtLine(row.residual_pred)}
+            color={row.residual_pred == null ? 'text-gray-500' : 'text-gray-100'}
+            title="The residual model's view of how wrong the opener is, and the number that decides the pick. Positive favours home. This is the primary rule; margin disagreement below belongs to the retired rule and is kept only for comparison."
+          />
+        )}
         {!isTotal && (
           <Field
             label="Margin disagreement"
             value={row.margin_disagreement == null ? '—' : fmtLine(row.margin_disagreement)}
-            title="How far the margin model sits from what the opener implies. Positive favours home."
+            color="text-gray-500"
+            title="Retired rule, logged as a shadow arm for comparison. Does NOT decide the pick."
           />
         )}
         <Field label="Direction so far"
@@ -222,7 +318,7 @@ function RowDetail({ row, books, quotes, loading, age }) {
           color={row.qualifies ? 'text-green-400' : 'text-gray-500'}
           title={isTotal
             ? 'Totals need 1.25+ pts of predicted movement — one signal only'
-            : 'Spreads need 3+ pts of margin disagreement, with the movement model pointing the same way'}
+            : 'Spreads need 1.5+ pts of model edge (residual). The old 3-pt margin-disagreement rule is retired and runs only as a shadow arm.'}
         />
       </div>
 
