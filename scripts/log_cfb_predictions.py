@@ -55,10 +55,75 @@ SEASON = 2026
 PRIOR = SEASON - 1
 
 
+# Every CFBD endpoint below returns data that is fixed for the season: final
+# prior-season SP+/FPI/talent/Elo, the venue list, and the schedule. This job
+# runs every 3 hours, so it was refetching all seven of them ~56 times a day for
+# values that never changed, and on 2026-08-11 that exhausted the monthly call
+# quota and took the logger down entirely.
+#
+# TTL controls when a refresh is ATTEMPTED. It is not an expiry: if CFBD is
+# unreachable or out of quota, a stale row is always served instead of raising.
+# Month-old SP+ is identical to today's SP+, and a run that produces predictions
+# beats a run that dies on a 429.
+CACHE_TTL_DAYS = {
+    "/ratings/sp": 365,        # final prior-season ratings, never change
+    "/ratings/fpi": 365,
+    "/ratings/elo": 365,
+    "/talent": 365,
+    "/venues": 365,
+    "/player/returning": 30,   # preseason figure, occasionally revised
+    "/games": 7,               # kick times and venues do shift
+}
+_cache_stats = {"hit": 0, "miss": 0, "stale": 0}
+
+
+def _cache_key(path, params):
+    return path + "?" + "&".join(f"{k}={params[k]}" for k in sorted(params))
+
+
+def _cache_read(key):
+    try:
+        r = (supabase.table("cfb_api_cache").select("payload, fetched_at")
+             .eq("cache_key", key).limit(1).execute())
+        return (r.data or [None])[0]
+    except Exception:
+        return None
+
+
 def get(path, **params):
-    r = requests.get(f"{API}{path}", headers=HDRS, params=params, timeout=120)
-    r.raise_for_status()
-    return r.json()
+    key = _cache_key(path, params)
+    row = _cache_read(key)
+    fresh = False
+    if row:
+        age = (pd.Timestamp.now(tz="UTC")
+               - pd.to_datetime(row["fetched_at"], utc=True)).days
+        fresh = age <= CACHE_TTL_DAYS.get(path, 7)
+    if row and fresh:
+        _cache_stats["hit"] += 1
+        return row["payload"]
+
+    try:
+        r = requests.get(f"{API}{path}", headers=HDRS, params=params, timeout=120)
+        r.raise_for_status()
+        payload = r.json()
+    except Exception as e:
+        # Serve stale rather than fail. This is the path that keeps the job
+        # alive through a quota outage.
+        if row is not None:
+            _cache_stats["stale"] += 1
+            print(f"  CFBD {path} failed ({type(e).__name__}) — using cached copy")
+            return row["payload"]
+        raise
+
+    _cache_stats["miss"] += 1
+    try:
+        supabase.table("cfb_api_cache").upsert(
+            {"cache_key": key, "payload": payload,
+             "fetched_at": pd.Timestamp.now(tz="UTC").isoformat()},
+            on_conflict="cache_key").execute()
+    except Exception as e:
+        print(f"  warning: could not cache {path} ({type(e).__name__})")
+    return payload
 
 
 def preseason_block() -> pd.DataFrame:
@@ -145,8 +210,22 @@ def main():
              .groupby(["home_team", "away_team"], as_index=False).first())
     print(f"CFB: {len(games)} games with a line")
 
-    pre = preseason_block()
-    sched, ven = venue_block()
+    # A quota outage with nothing cached is an external condition, not a code
+    # fault, and it self-heals when the allowance resets. Exit cleanly so the
+    # 3-hourly cron does not raise an alert every run for days on end -- but say
+    # so loudly, because the visible symptom is that predictions stop updating
+    # while the odds keep flowing.
+    try:
+        pre = preseason_block()
+        sched, ven = venue_block()
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 429:
+            print("\n  !! CFBD monthly call quota exhausted and nothing cached.")
+            print("     Odds and line history are unaffected; CFB predictions")
+            print("     will not refresh until the allowance resets.")
+            print("     Existing logged predictions are frozen and still valid.\n")
+            return
+        raise
     games = games.merge(sched.drop(columns=["home_raw", "away_raw"]),
                         on=["home_team", "away_team"], how="left")
     games = games.merge(ven, on="venue_id", how="left")
@@ -268,6 +347,9 @@ def main():
                     "projected_value": round(float(line + pred[i]), 2),
                     "margin_disagreement": None,
                     "predicted_side": side, "taken_line": float(line)})
+
+    print(f"  CFBD calls: {_cache_stats['miss']} live, "
+          f"{_cache_stats['hit']} cached, {_cache_stats['stale']} served stale")
 
     ns = sum(1 for r in rows if r["bet_type"] == "spread")
     print(f"  {len(rows)} predictions ({ns} spread, {len(rows)-ns} total)")
