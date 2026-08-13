@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -36,6 +36,20 @@ const fmtPrice = v => v == null ? '' : v > 0 ? `+${v}` : `${v}`
 // Nothing is being changed about how the lean is chosen -- preseason has no
 // validated rule to change it to -- only about saying out loud where it came
 // from.
+// How much the model actually has to say about a game, for ranking only.
+//
+// Spreads score on the margin model's gap to the line, because that is the
+// quantity in points -- the movement model's output is tenths and does not
+// separate anything. But a game where the two models point opposite ways is a
+// coin flip no matter how large that gap is, so splits are demoted below every
+// game the models agree on rather than topping the list on a number that has an
+// argument against it. Totals have only the one signal.
+function convictionScore(r) {
+  if (r.bet_type === 'total') return Math.abs(r.predicted_movement ?? 0)
+  const gap = Math.abs(r.margin_disagreement ?? 0)
+  return leanExplain(r)?.split ? gap - 1000 : gap
+}
+
 function leanExplain(r) {
   if (r.bet_type === 'total' || r.margin_disagreement == null) return null
   const lean = r.predicted_side === 'home' ? r.home_team : r.away_team
@@ -60,6 +74,24 @@ export default function PreseasonPanel() {
   const [quotes, setQuotes] = useState([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(null)
+  const [sort, setSort] = useState('time')
+  const [type, setType] = useState('all')
+
+  // Games that have already kicked off are dropped. Nothing here grades a
+  // result, so a finished game is pure clutter -- and under "strongest lean" it
+  // sorted into the middle of the list on last week's number, which reads as a
+  // play that is still available.
+  const upcoming = useMemo(() => {
+    const now = Date.now()
+    return rows.filter(r => new Date(r.commence_time).getTime() > now)
+  }, [rows])
+
+  const visible = useMemo(() => {
+    const s = upcoming.filter(r => type === 'all' || r.bet_type === type)
+    return sort === 'lean'
+      ? [...s].sort((a, b) => convictionScore(b) - convictionScore(a))
+      : [...s].sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time))
+  }, [upcoming, sort, type])
 
   useEffect(() => {
     let cancelled = false
@@ -86,6 +118,18 @@ export default function PreseasonPanel() {
         <span className="text-xs text-gray-700">
           Run <code className="bg-gray-900 px-1 rounded">fetch_preseason_lines.py</code>, then{' '}
           <code className="bg-gray-900 px-1 rounded">log_preseason_predictions.py</code>
+        </span>
+      </div>
+    )
+  }
+
+  if (upcoming.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-48 text-gray-600 text-sm gap-2">
+        <span>Every projected preseason game has already kicked off</span>
+        <span className="text-xs text-gray-700">
+          Re-run <code className="bg-gray-900 px-1 rounded">fetch_preseason_lines.py</code>, then{' '}
+          <code className="bg-gray-900 px-1 rounded">log_preseason_predictions.py</code> for the next slate
         </span>
       </div>
     )
@@ -120,6 +164,33 @@ export default function PreseasonPanel() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        {[['all', `All ${upcoming.length}`],
+          ['spread', `Spreads ${upcoming.filter(r => r.bet_type === 'spread').length}`],
+          ['total', `Totals ${upcoming.filter(r => r.bet_type === 'total').length}`]].map(([k, label]) => (
+          <button key={k} onClick={() => setType(k)}
+                  className={`px-2.5 py-1 rounded border ${
+                    type === k ? 'border-gray-500 text-gray-200 bg-gray-800'
+                               : 'border-gray-800 text-gray-500 hover:text-gray-300'}`}>
+            {label}
+          </button>
+        ))}
+        <span className="text-gray-700 px-1">|</span>
+        {[['time', 'Kickoff'], ['lean', 'Strongest lean']].map(([k, label]) => (
+          <button key={k} onClick={() => setSort(k)}
+                  className={`px-2.5 py-1 rounded border ${
+                    sort === k ? 'border-gray-500 text-gray-200 bg-gray-800'
+                               : 'border-gray-800 text-gray-500 hover:text-gray-300'}`}>
+            {label}
+          </button>
+        ))}
+        {sort === 'lean' && (
+          <span className="text-gray-600">
+            ranked by the margin model's gap to the line — split games sink to the bottom
+          </span>
+        )}
+      </div>
+
       <div className="bg-gray-900 rounded border border-gray-800 overflow-hidden">
         <div className={`hidden md:grid ${GRID} gap-2 px-4 py-2 text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800`}>
           <span />
@@ -133,7 +204,7 @@ export default function PreseasonPanel() {
         </div>
 
         <div className="divide-y divide-gray-800/50">
-          {rows.map(r => {
+          {visible.map(r => {
             const key = `${r.game_id}_${r.bet_type}`
             const isTotal = r.bet_type === 'total'
             const fmt = isTotal ? fmtNum : fmtLine
