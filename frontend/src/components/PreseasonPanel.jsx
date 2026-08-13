@@ -27,6 +27,27 @@ const fmtLine = v => v == null ? '—' : v > 0 ? `+${v.toFixed(1)}` : v.toFixed(
 const fmtNum = v => v == null ? '—' : v.toFixed(1)
 const fmtPrice = v => v == null ? '' : v > 0 ? `+${v}` : `${v}`
 
+// Say which model drove the lean, and whether the other one agrees.
+//
+// The side comes from the MOVEMENT model, but the row also shows the margin
+// model and its gap to the line. Those two point opposite ways on a couple of
+// games a week, and when they do the panel read as though the lean was
+// inverted: MIN @ NYG leaned MIN while displaying a +3.6 margin for NYG.
+// Nothing is being changed about how the lean is chosen -- preseason has no
+// validated rule to change it to -- only about saying out loud where it came
+// from.
+function leanExplain(r) {
+  if (r.bet_type === 'total' || r.margin_disagreement == null) return null
+  const lean = r.predicted_side === 'home' ? r.home_team : r.away_team
+  const marginTeam = r.margin_disagreement > 0 ? r.home_team : r.away_team
+  const split = marginTeam !== lean
+  return {
+    lean, marginTeam, split,
+    move: Math.abs(r.predicted_movement ?? 0).toFixed(2),
+    gap: Math.abs(r.margin_disagreement).toFixed(1),
+  }
+}
+
 function fmtDate(s) {
   if (!s) return ''
   return new Date(s).toLocaleString(undefined, {
@@ -122,6 +143,7 @@ export default function PreseasonPanel() {
             const side = isTotal
               ? (r.predicted_side === 'over' ? 'Over' : 'Under')
               : (r.predicted_side === 'home' ? r.home_team : r.away_team)
+            const why = leanExplain(r)
             return (
               <div key={key}>
                 <div role="button" tabIndex={0}
@@ -144,12 +166,34 @@ export default function PreseasonPanel() {
                     <span className="text-gray-300">{fmt(r.projected_close)}</span>
                     <span className="text-gray-600 ml-1.5">({fmtLine(r.predicted_movement)})</span>
                   </div>
-                  <div className="text-right text-xs text-gray-200 font-medium truncate">{side}</div>
+                  <div className="text-right text-xs font-medium truncate">
+                    <span className="text-gray-200">{side}</span>
+                    {why?.split && (
+                      <span className="ml-1.5 text-[9px] uppercase tracking-wider text-amber-500/80"
+                            title={`The movement model leans ${why.lean}; the margin model leans ${why.marginTeam}.`}>
+                        split
+                      </span>
+                    )}
+                  </div>
                   <div className="text-right text-gray-500 text-xs tabular-nums">{r.n_books ?? '—'}</div>
                 </div>
 
                 {isOpen && (
                   <div className="px-4 py-3 bg-gray-950/60 border-t border-gray-800/70 space-y-3">
+                    {why && (
+                      <div className="text-xs leading-relaxed bg-gray-900/50 border-l-2 border-gray-700 pl-3 py-2 text-gray-300">
+                        <span className="text-gray-500">Why {why.lean}: </span>
+                        the lean follows the <span className="text-gray-100">movement</span> model,
+                        which expects the number to move {why.move} toward {why.lean}.
+                        {why.split ? (
+                          <> The margin model disagrees — it makes{' '}
+                            <span className="text-amber-300/90">{why.marginTeam}</span> the side by{' '}
+                            {why.gap} points, so treat this one as a coin flip.</>
+                        ) : (
+                          <> The margin model agrees, making {why.marginTeam} the side by {why.gap} points.</>
+                        )}
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                       <div>
                         <div className="text-[10px] text-gray-600 uppercase tracking-wider">Consensus line</div>
@@ -161,15 +205,15 @@ export default function PreseasonPanel() {
                       </div>
                       {!isTotal && (
                         <>
-                          <div>
+                          <div title="Second opinion — does NOT decide the lean. Positive favours home.">
                             <div className="text-[10px] text-gray-600 uppercase tracking-wider">Model margin</div>
-                            <div className="text-gray-200 tabular-nums">
+                            <div className="text-gray-400 tabular-nums">
                               {r.projected_margin == null ? '—' : fmtLine(r.projected_margin)}
                             </div>
                           </div>
-                          <div>
+                          <div title="The margin model's gap to the line. Second opinion — does NOT decide the lean.">
                             <div className="text-[10px] text-gray-600 uppercase tracking-wider">vs the line</div>
-                            <div className="text-gray-200 tabular-nums">
+                            <div className="text-gray-400 tabular-nums">
                               {r.margin_disagreement == null ? '—' : fmtLine(r.margin_disagreement)}
                             </div>
                           </div>

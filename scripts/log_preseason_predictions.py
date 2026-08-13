@@ -145,13 +145,30 @@ def main():
             "predicted_side": "over" if tmove[i] > 0 else "under",
         })
 
+    # The side comes from the MOVEMENT model. The margin model is shown next to
+    # it as context, and the two point opposite ways often enough that printing
+    # the margin alone made the pick look inverted. Name the team rather than
+    # 'home'/'away', and say plainly when the two models split.
+    splits = 0
     for r in rows:
-        side = r["predicted_side"]
-        extra = (f"model margin {r['projected_margin']:+6.2f}  disagree {r['margin_disagreement']:+6.2f}"
-                 if r["bet_type"] == "spread" else " " * 40)
-        print(f"  [{r['bet_type'][:3].upper()}] {r['away_team']:>3} @ {r['home_team']:<3}  "
-              f"line {r['open_line']:+6.1f}  move {r['predicted_movement']:+6.2f}  "
-              f"{extra}  -> {side}")
+        if r["bet_type"] == "spread":
+            team = r["home_team"] if r["predicted_side"] == "home" else r["away_team"]
+            dis = r["margin_disagreement"]
+            dis_team = r["home_team"] if dis > 0 else r["away_team"]
+            split = dis_team != team
+            splits += split
+            note = (f"  << SPLIT: margin model likes {dis_team}" if split
+                    else f"  (margin agrees: {dis_team})")
+            print(f"  [SPR] {r['away_team']:>3} @ {r['home_team']:<3}  "
+                  f"line {r['open_line']:+6.1f}  move {r['predicted_movement']:+6.2f}"
+                  f"  -> {team:<3}  margin {r['projected_margin']:+6.2f}{note}")
+        else:
+            print(f"  [TOT] {r['away_team']:>3} @ {r['home_team']:<3}  "
+                  f"line {r['open_line']:+6.1f}  move {r['predicted_movement']:+6.2f}"
+                  f"  -> {r['predicted_side']}")
+    n_spr = sum(1 for r in rows if r["bet_type"] == "spread")
+    if n_spr:
+        print(f"\n  movement and margin models split on {splits} of {n_spr} spreads")
 
     if dry:
         print("  --dry-run: nothing written")
