@@ -76,6 +76,7 @@ export default function PreseasonPanel() {
   const [open, setOpen] = useState(null)
   const [sort, setSort] = useState('time')
   const [type, setType] = useState('all')
+  const [status, setStatus] = useState('upcoming')
   const [refresh, setRefresh] = useState(null)   // null | 'running' | 'ok' | 'error'
   const [refreshMsg, setRefreshMsg] = useState('')
 
@@ -127,12 +128,46 @@ export default function PreseasonPanel() {
     return rows.filter(r => new Date(r.commence_time).getTime() > now)
   }, [rows])
 
+  const graded = useMemo(() => rows.filter(r => r.result), [rows])
+
   const visible = useMemo(() => {
-    const s = upcoming.filter(r => type === 'all' || r.bet_type === type)
+    const pool = status === 'final' ? graded : upcoming
+    const s = pool.filter(r => type === 'all' || r.bet_type === type)
+    if (status === 'final') {
+      // Most recent first when looking back; kickoff order only makes sense
+      // for a board that has not happened yet.
+      return sort === 'lean'
+        ? [...s].sort((a, b) => convictionScore(b) - convictionScore(a))
+        : [...s].sort((a, b) => new Date(b.commence_time) - new Date(a.commence_time))
+    }
     return sort === 'lean'
       ? [...s].sort((a, b) => convictionScore(b) - convictionScore(a))
       : [...s].sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time))
-  }, [upcoming, sort, type])
+  }, [upcoming, graded, status, sort, type])
+
+  // Record, plus the split that actually matters: the lean lands on the
+  // underdog in most preseason games, so a good record may be measuring "dogs
+  // cover" rather than anything the model knows.
+  const record = useMemo(() => {
+    const tally = rs => rs.reduce((a, r) => (a[r.result] = (a[r.result] || 0) + 1, a), {})
+    const fmt = t => `${t.win || 0}-${t.loss || 0}${t.push ? `-${t.push}` : ''}`
+    const pct = t => {
+      const n = (t.win || 0) + (t.loss || 0)
+      return n ? `${((t.win || 0) / n * 100).toFixed(0)}%` : '—'
+    }
+    const sp = graded.filter(r => r.bet_type === 'spread')
+    const to = graded.filter(r => r.bet_type === 'total')
+    const dog = sp.filter(r => r.pick_is_dog)
+    const fav = sp.filter(r => r.pick_is_dog === false)
+    return {
+      any: graded.length > 0,
+      spread: `${fmt(tally(sp))} (${pct(tally(sp))})`,
+      total: `${fmt(tally(to))} (${pct(tally(to))})`,
+      dog: `${fmt(tally(dog))} (${pct(tally(dog))})`,
+      fav: `${fmt(tally(fav))} (${pct(tally(fav))})`,
+      dogN: dog.length, favN: fav.length,
+    }
+  }, [graded])
 
   useEffect(() => {
     (async () => { setLoading(true); await load(); setLoading(false) })()
@@ -178,7 +213,7 @@ export default function PreseasonPanel() {
     )
   }
 
-  if (upcoming.length === 0) {
+  if (upcoming.length === 0 && graded.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-48 text-gray-600 text-sm gap-2">
         <span>Every projected preseason game has already kicked off</span>
@@ -188,7 +223,7 @@ export default function PreseasonPanel() {
     )
   }
 
-  const GRID = 'grid-cols-[24px_52px_1.3fr_1fr_80px_110px_90px_60px]'
+  const GRID = 'grid-cols-[24px_52px_1.3fr_1fr_80px_110px_90px_60px_58px]'
 
   return (
     <div className="p-4 space-y-4 max-w-5xl mx-auto">
@@ -218,9 +253,19 @@ export default function PreseasonPanel() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        {[['all', `All ${upcoming.length}`],
-          ['spread', `Spreads ${upcoming.filter(r => r.bet_type === 'spread').length}`],
-          ['total', `Totals ${upcoming.filter(r => r.bet_type === 'total').length}`]].map(([k, label]) => (
+        {[['upcoming', `Upcoming ${upcoming.length}`],
+          ['final', `Final ${graded.length}`]].map(([k, label]) => (
+          <button key={k} onClick={() => setStatus(k)}
+                  className={`px-2.5 py-1 rounded border ${
+                    status === k ? 'border-gray-500 text-gray-200 bg-gray-800'
+                                 : 'border-gray-800 text-gray-500 hover:text-gray-300'}`}>
+            {label}
+          </button>
+        ))}
+        <span className="text-gray-700 px-1">|</span>
+        {[['all', `All ${(status === 'final' ? graded : upcoming).length}`],
+          ['spread', `Spreads ${(status === 'final' ? graded : upcoming).filter(r => r.bet_type === 'spread').length}`],
+          ['total', `Totals ${(status === 'final' ? graded : upcoming).filter(r => r.bet_type === 'total').length}`]].map(([k, label]) => (
           <button key={k} onClick={() => setType(k)}
                   className={`px-2.5 py-1 rounded border ${
                     type === k ? 'border-gray-500 text-gray-200 bg-gray-800'
@@ -246,6 +291,26 @@ export default function PreseasonPanel() {
         <div className="ml-auto">{refreshButton}</div>
       </div>
 
+      {record.any && (
+        <div className="bg-gray-900 rounded border border-gray-800 px-4 py-3 text-xs space-y-2">
+          <div className="flex flex-wrap gap-x-6 gap-y-1">
+            <span className="text-gray-500">Graded so far:</span>
+            <span className="text-gray-300">spreads <span className="text-gray-100">{record.spread}</span></span>
+            <span className="text-gray-300">totals <span className="text-gray-100">{record.total}</span></span>
+          </div>
+          <div className="flex flex-wrap gap-x-6 gap-y-1">
+            <span className="text-gray-500">Model on the dog vs the favourite:</span>
+            <span className="text-gray-300">dog <span className="text-gray-100">{record.dog}</span></span>
+            <span className="text-gray-300">favourite <span className="text-gray-100">{record.fav}</span></span>
+          </div>
+          <div className="text-gray-600 leading-relaxed">
+            The lean lands on the underdog in {record.dogN} of {record.dogN + record.favN} graded
+            spreads, so this record is largely a measurement of whether preseason dogs cover —
+            a well-worn pattern that owes nothing to the model. Read it as entertainment, not evidence.
+          </div>
+        </div>
+      )}
+
       <div className="bg-gray-900 rounded border border-gray-800 overflow-hidden">
         <div className={`hidden md:grid ${GRID} gap-2 px-4 py-2 text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800`}>
           <span />
@@ -256,9 +321,17 @@ export default function PreseasonPanel() {
           <span className="text-right">Model says (move)</span>
           <span className="text-right">Leans</span>
           <span className="text-right">Books</span>
+          <span className="text-right">Result</span>
         </div>
 
         <div className="divide-y divide-gray-800/50">
+          {visible.length === 0 && (
+            <div className="px-4 py-6 text-center text-xs text-gray-600">
+              {status === 'upcoming'
+                ? 'Nothing left on the board — every projected game has kicked off. Refresh for the next slate, or switch to Final.'
+                : 'No graded games yet.'}
+            </div>
+          )}
           {visible.map(r => {
             const key = `${r.game_id}_${r.bet_type}`
             const isTotal = r.bet_type === 'total'
@@ -302,6 +375,17 @@ export default function PreseasonPanel() {
                     )}
                   </div>
                   <div className="text-right text-gray-500 text-xs tabular-nums">{r.n_books ?? '—'}</div>
+                  <div className="text-right text-xs">
+                    {r.result ? (
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
+                        r.result === 'win' ? 'bg-green-950 text-green-400'
+                        : r.result === 'loss' ? 'bg-red-950 text-red-400'
+                        : 'bg-gray-800 text-gray-400'
+                      }`}>
+                        {r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}
+                      </span>
+                    ) : <span className="text-gray-700">—</span>}
+                  </div>
                 </div>
 
                 {isOpen && (
@@ -321,6 +405,14 @@ export default function PreseasonPanel() {
                       </div>
                     )}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                      {r.home_score != null && (
+                        <div>
+                          <div className="text-[10px] text-gray-600 uppercase tracking-wider">Final</div>
+                          <div className="text-gray-200 tabular-nums">
+                            {r.away_team} {r.away_score} — {r.home_team} {r.home_score}
+                          </div>
+                        </div>
+                      )}
                       <div>
                         <div className="text-[10px] text-gray-600 uppercase tracking-wider">Consensus line</div>
                         <div className="text-gray-200 tabular-nums">{fmt(r.current_line)}</div>
