@@ -122,6 +122,14 @@ def main():
 
     disagree = margin + feats["week_open_spread_home"].values
 
+    # Stamped explicitly rather than left to the column default. This table is
+    # upserted on (game_id, bet_type), and a DB default only fires on INSERT --
+    # so re-running refreshed every number while leaving predicted_at frozen at
+    # the first run forever. Nothing here freezes a price the way
+    # line_predictions deliberately does, so "last recomputed" is the honest
+    # meaning of this column.
+    now_iso = pd.Timestamp.now(tz="UTC").isoformat()
+
     rows = []
     for i, (_, g) in enumerate(feats.iterrows()):
         gid = games.iloc[i]["game_id"]
@@ -134,6 +142,7 @@ def main():
             "projected_margin": round(float(margin[i]), 2),
             "margin_disagreement": round(float(disagree[i]), 3),
             "predicted_side": "home" if move[i] < 0 else "away",
+            "predicted_at": now_iso,
         })
         rows.append({
             "game_id": gid, "bet_type": "total", "season": season,
@@ -143,6 +152,7 @@ def main():
             "projected_margin": None,
             "margin_disagreement": None,
             "predicted_side": "over" if tmove[i] > 0 else "under",
+            "predicted_at": now_iso,
         })
 
     # The side comes from the MOVEMENT model. The margin model is shown next to
