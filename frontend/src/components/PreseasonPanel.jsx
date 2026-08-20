@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ChevronDown, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 // Preseason board plus model projections — deliberately walled off from
@@ -27,15 +27,6 @@ const fmtLine = v => v == null ? '—' : v > 0 ? `+${v.toFixed(1)}` : v.toFixed(
 const fmtNum = v => v == null ? '—' : v.toFixed(1)
 const fmtPrice = v => v == null ? '' : v > 0 ? `+${v}` : `${v}`
 
-// Say which model drove the lean, and whether the other one agrees.
-//
-// The side comes from the MOVEMENT model, but the row also shows the margin
-// model and its gap to the line. Those two point opposite ways on a couple of
-// games a week, and when they do the panel read as though the lean was
-// inverted: MIN @ NYG leaned MIN while displaying a +3.6 margin for NYG.
-// Nothing is being changed about how the lean is chosen -- preseason has no
-// validated rule to change it to -- only about saying out loud where it came
-// from.
 // How much the model actually has to say about a game, for ranking only.
 //
 // Spreads score on the margin model's gap to the line, because that is the
@@ -50,6 +41,15 @@ function convictionScore(r) {
   return leanExplain(r)?.split ? gap - 1000 : gap
 }
 
+// Say which model drove the lean, and whether the other one agrees.
+//
+// The side comes from the MOVEMENT model, but the row also shows the margin
+// model and its gap to the line. Those two point opposite ways on a couple of
+// games a week, and when they do the panel read as though the lean was
+// inverted: MIN @ NYG leaned MIN while displaying a +3.6 margin for NYG.
+// Nothing is being changed about how the lean is chosen -- preseason has no
+// validated rule to change it to -- only about saying out loud where it came
+// from.
 function leanExplain(r) {
   if (r.bet_type === 'total' || r.margin_disagreement == null) return null
   const lean = r.predicted_side === 'home' ? r.home_team : r.away_team
@@ -76,6 +76,47 @@ export default function PreseasonPanel() {
   const [open, setOpen] = useState(null)
   const [sort, setSort] = useState('time')
   const [type, setType] = useState('all')
+  const [refresh, setRefresh] = useState(null)   // null | 'running' | 'ok' | 'error'
+  const [refreshMsg, setRefreshMsg] = useState('')
+
+  async function load() {
+    const [p, q] = await Promise.all([
+      supabase.from('preseason_projections').select('*').order('commence_time'),
+      supabase.from('preseason_lines').select('*'),
+    ])
+    setRows(p.data ?? []); setQuotes(q.data ?? [])
+  }
+
+  // Kicks off the GitHub workflow, then polls for the new rows. The job takes
+  // a couple of minutes (install, model download, two API pulls), so the button
+  // keeps reporting until rows actually change rather than claiming success the
+  // moment the dispatch is accepted -- a 200 here only means GitHub queued it.
+  async function refreshBoard() {
+    setRefresh('running'); setRefreshMsg('Starting…')
+    const before = rows.length ? Math.max(...rows.map(r => +new Date(r.predicted_at || 0))) : 0
+    try {
+      const { error } = await supabase.functions.invoke('trigger-pipeline', {
+        body: { action: 'log-preseason' },
+      })
+      if (error) throw error
+      setRefreshMsg('Running (~2 min)…')
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 6000))
+        const { data } = await supabase.from('preseason_projections')
+          .select('predicted_at').order('predicted_at', { ascending: false }).limit(1)
+        const latest = data?.[0] ? +new Date(data[0].predicted_at) : 0
+        if (latest > before) {
+          await load()
+          setRefresh('ok'); setRefreshMsg('Board updated')
+          setTimeout(() => setRefresh(null), 5000)
+          return
+        }
+      }
+      setRefresh('error'); setRefreshMsg('Timed out — check the Actions tab')
+    } catch (err) {
+      setRefresh('error'); setRefreshMsg('Failed to start')
+    }
+  }
 
   // Games that have already kicked off are dropped. Nothing here grades a
   // result, so a finished game is pure clutter -- and under "strongest lean" it
@@ -94,18 +135,34 @@ export default function PreseasonPanel() {
   }, [upcoming, sort, type])
 
   useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      const [p, q] = await Promise.all([
-        supabase.from('preseason_projections').select('*').order('commence_time'),
-        supabase.from('preseason_lines').select('*'),
-      ])
-      if (!cancelled) { setRows(p.data ?? []); setQuotes(q.data ?? []); setLoading(false) }
-    }
-    load()
-    return () => { cancelled = true }
+    (async () => { setLoading(true); await load(); setLoading(false) })()
   }, [])
+
+  // Defined before the early returns on purpose: an empty or fully-kicked-off
+  // board is precisely when this button is needed, and it used to live only in
+  // the controls row that those returns skip past.
+  const refreshButton = (
+    <div className="flex items-center gap-2 text-xs">
+      {refreshMsg && (
+        <span className={
+          refresh === 'error' ? 'text-red-400' :
+          refresh === 'ok' ? 'text-green-400' : 'text-gray-500'
+        }>{refreshMsg}</span>
+      )}
+      <button
+        onClick={refreshBoard}
+        disabled={refresh === 'running'}
+        title="Pulls the current preseason board from the Odds API and reprojects it"
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded border ${
+          refresh === 'running'
+            ? 'border-gray-800 text-gray-600 cursor-not-allowed'
+            : 'border-gray-700 text-gray-300 hover:border-gray-500'
+        }`}>
+        <RefreshCw size={11} className={refresh === 'running' ? 'animate-spin' : ''} />
+        {refresh === 'running' ? 'Refreshing…' : 'Refresh board'}
+      </button>
+    </div>
+  )
 
   if (loading) {
     return <div className="flex items-center justify-center h-48 text-gray-600 text-sm">Loading preseason…</div>
@@ -115,10 +172,8 @@ export default function PreseasonPanel() {
     return (
       <div className="flex flex-col items-center justify-center h-48 text-gray-600 text-sm gap-2">
         <span>No preseason projections yet</span>
-        <span className="text-xs text-gray-700">
-          Run <code className="bg-gray-900 px-1 rounded">fetch_preseason_lines.py</code>, then{' '}
-          <code className="bg-gray-900 px-1 rounded">log_preseason_predictions.py</code>
-        </span>
+        <span className="text-xs text-gray-700">Pull the current board to get started</span>
+        {refreshButton}
       </div>
     )
   }
@@ -127,10 +182,8 @@ export default function PreseasonPanel() {
     return (
       <div className="flex flex-col items-center justify-center h-48 text-gray-600 text-sm gap-2">
         <span>Every projected preseason game has already kicked off</span>
-        <span className="text-xs text-gray-700">
-          Re-run <code className="bg-gray-900 px-1 rounded">fetch_preseason_lines.py</code>, then{' '}
-          <code className="bg-gray-900 px-1 rounded">log_preseason_predictions.py</code> for the next slate
-        </span>
+        <span className="text-xs text-gray-700">Pull the next slate to see fresh projections</span>
+        {refreshButton}
       </div>
     )
   }
@@ -189,6 +242,8 @@ export default function PreseasonPanel() {
             ranked by the margin model's gap to the line — split games sink to the bottom
           </span>
         )}
+
+        <div className="ml-auto">{refreshButton}</div>
       </div>
 
       <div className="bg-gray-900 rounded border border-gray-800 overflow-hidden">

@@ -1,0 +1,68 @@
+name: Refresh Preseason
+
+# Pulls the current preseason board and reprojects it.
+#
+# Dispatch only, deliberately no schedule. Preseason is entertainment — the
+# models read regular-season starter metrics for players who spend these games
+# on the sideline — so there is no reason to spend Odds API credits on it every
+# few hours the way the real markets justify. It runs when someone asks for it
+# from the Preseason tab.
+#
+# Both steps are idempotent: preseason_lines is replaced per game and
+# preseason_predictions upserts on (game_id, bet_type), so re-running only
+# refreshes numbers.
+#
+# Isolation is the point of the separate workflow. These scripts write to
+# preseason_lines and preseason_predictions and nothing else — never
+# line_history or book_lines, which join on the team pair alone and would put a
+# preseason DAL @ SEA on top of the regular-season one.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  log-preseason:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies
+        # requests is appended rather than added to requirements-ci.txt: that
+        # file's hash is the pip cache key for the NFL workflows, and editing it
+        # would force a cold resolve of unpinned packages in the pipeline that
+        # produces every validated number we have. fetch_preseason_lines calls
+        # the Odds API with requests directly.
+        run: pip install -r requirements-ci.txt requests
+
+      - name: Download models from Supabase Storage
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/download_models.py
+
+      - name: Fetch preseason lines
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python scripts/fetch_preseason_lines.py
+
+      - name: Log preseason projections
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+        run: python scripts/log_preseason_predictions.py
