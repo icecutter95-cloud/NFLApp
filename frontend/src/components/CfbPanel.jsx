@@ -30,6 +30,27 @@ function fmtDate(s) {
   })
 }
 
+// The side, stated in full, for the expanded row.
+//
+// predicted_side is only populated when the movement and margin models agree --
+// that is the tested rule -- so a null needs explaining rather than hiding. Both
+// underlying signals are on the row, so the disagreement can be shown directly
+// instead of just asserting there was one.
+function sideDetail(r) {
+  const mvTeam = r.predicted_movement == null ? null
+               : r.predicted_movement < 0 ? r.home_team : r.away_team
+  const disTeam = r.margin_disagreement == null ? null
+                : r.margin_disagreement > 0 ? r.home_team : r.away_team
+  if (r.predicted_side) {
+    const team = r.predicted_side === 'home' ? r.home_team : r.away_team
+    // taken_line is already mirrored for the away side by the logger.
+    const num = r.taken_line != null ? r.taken_line
+              : (r.predicted_side === 'home' ? r.open_line : -r.open_line)
+    return { agree: true, team, num, mvTeam, disTeam }
+  }
+  return { agree: false, team: null, num: null, mvTeam, disTeam }
+}
+
 function Field({ label, value, color }) {
   return (
     <div>
@@ -93,10 +114,10 @@ export default function CfbPanel({ season }) {
     )
   }
 
-  const GRID = 'grid-cols-[24px_1.5fr_1fr_80px_90px_90px_70px]'
+  const GRID = 'grid-cols-[24px_1fr_145px_72px_94px_84px_158px]'
 
   return (
-    <div className="p-4 space-y-4 max-w-5xl mx-auto">
+    <div className="p-4 space-y-4 max-w-6xl mx-auto">
 
       <div className="flex items-start gap-2 text-xs bg-amber-950/30 border border-amber-900/60 rounded p-3">
         <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-500" />
@@ -175,7 +196,8 @@ export default function CfbPanel({ season }) {
                      className={`grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center cursor-pointer hover:bg-gray-800/30`}>
                   <div>{isOpen ? <ChevronDown size={12} className="text-gray-500" />
                                : <ChevronRight size={12} className="text-gray-600" />}</div>
-                  <div className="text-gray-100 truncate text-xs">{r.away_team} @ {r.home_team}</div>
+                  <div className="text-gray-100 truncate text-xs"
+                       title={`${r.away_team} @ ${r.home_team}`}>{r.away_team} @ {r.home_team}</div>
                   <div className="text-gray-500 text-xs truncate">{fmtDate(r.commence_time)}</div>
                   <div className="text-right text-gray-400 text-xs tabular-nums">{fmtLine(r.open_line)}</div>
                   <div className="text-right text-gray-300 text-xs tabular-nums">
@@ -187,11 +209,43 @@ export default function CfbPanel({ season }) {
                   }`}>{dis == null ? '—' : fmtLine(dis)}</div>
                   <div className={`text-right text-xs truncate ${
                     side ? 'text-gray-300' : 'text-gray-600 italic'
-                  }`}>{side ?? 'models split'}</div>
+                  }`} title={side ? `Model backs ${side}` : 'The movement and margin models disagree, so the rule declines to pick'}>
+                    {side ?? 'models split'}
+                  </div>
                 </div>
 
                 {isOpen && (
                   <div className="px-4 py-3 bg-gray-950/60 border-t border-gray-800/70">
+                    {(() => {
+                      const d = sideDetail(r)
+                      return (
+                        <div className="mb-3 text-xs leading-relaxed bg-gray-900/50 border-l-2 border-gray-700 pl-3 py-2">
+                          {d.agree ? (
+                            <>
+                              <span className="text-gray-500">Model's side: </span>
+                              <span className="text-gray-100 font-medium">
+                                {d.team} {fmtLine(d.num)}
+                              </span>
+                              <div className="text-gray-500 mt-1">
+                                Both models point the same way — the movement model expects the number to
+                                move toward {d.mvTeam}, and the margin model makes {d.disTeam} the side.
+                                Shown as information only; nothing on this page is flagged as a bet.
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-gray-500">Model's side: </span>
+                              <span className="text-amber-300/90 font-medium">none — the models split</span>
+                              <div className="text-gray-500 mt-1">
+                                The movement model leans <span className="text-gray-300">{d.mvTeam ?? '—'}</span>,
+                                the margin model leans <span className="text-gray-300">{d.disTeam ?? '—'}</span>.
+                                The tested rule only takes a side when they agree, so it declines here.
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )
+                    })()}
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                       <Field label="Opening line" value={fmtLine(r.open_line)} />
                       <Field label="Model margin" value={r.projected_value == null ? '—' : fmtLine(r.projected_value)} />
