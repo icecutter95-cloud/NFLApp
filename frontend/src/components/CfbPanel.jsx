@@ -25,6 +25,17 @@ const fmtLine = v => v == null ? '—' : v > 0 ? `+${v.toFixed(1)}` : v.toFixed(
 
 function fmtDate(s) {
   if (!s) return ''
+  const d = new Date(s)
+  const wd = d.toLocaleDateString(undefined, { weekday: 'short' })
+  const md = d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
+  const hm = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    .replace(' ', '').replace('AM', 'a').replace('PM', 'p')
+  return `${wd} ${md} ${hm}`
+}
+
+// Long form, for the expanded row where there is room for it.
+function fmtDateFull(s) {
+  if (!s) return ''
   return new Date(s).toLocaleString(undefined, {
     weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   })
@@ -114,7 +125,7 @@ export default function CfbPanel({ season }) {
     )
   }
 
-  const GRID = 'grid-cols-[24px_1fr_145px_72px_94px_84px_158px]'
+  const GRID = 'grid-cols-[24px_1fr_98px_122px_58px_62px_88px_74px_146px]'
 
   return (
     <div className="p-4 space-y-4 max-w-6xl mx-auto">
@@ -172,7 +183,9 @@ export default function CfbPanel({ season }) {
           <span />
           <span>Game</span>
           <span>Kickoff</span>
-          <span className="text-right">Line</span>
+          <span className="text-right">Open → now</span>
+          <span className="text-right">Moved</span>
+          <span className="text-right">Proj.</span>
           <span className="text-right">Model margin</span>
           <span className="text-right">vs line</span>
           <span className="text-right">Leans</span>
@@ -199,7 +212,22 @@ export default function CfbPanel({ season }) {
                   <div className="text-gray-100 truncate text-xs"
                        title={`${r.away_team} @ ${r.home_team}`}>{r.away_team} @ {r.home_team}</div>
                   <div className="text-gray-500 text-xs truncate">{fmtDate(r.commence_time)}</div>
-                  <div className="text-right text-gray-400 text-xs tabular-nums">{fmtLine(r.open_line)}</div>
+                  <div className="text-right text-xs tabular-nums whitespace-nowrap"
+                       title={r.closing_line == null ? 'No current line captured yet'
+                              : `Opened ${fmtLine(r.open_line)}, currently ${fmtLine(r.closing_line)}`}>
+                    <span className="text-gray-600">{fmtLine(r.open_line)}</span>
+                    <span className="text-gray-700 mx-0.5">→</span>
+                    <span className="text-gray-200">
+                      {r.closing_line == null ? '—' : fmtLine(r.closing_line)}
+                    </span>
+                  </div>
+                  <div className={`text-right text-xs tabular-nums ${
+                    !r.actual_movement ? 'text-gray-700' : 'text-gray-200'
+                  }`}>{r.actual_movement == null ? '—'
+                       : r.actual_movement === 0 ? '0.0' : fmtLine(r.actual_movement)}</div>
+                  <div className="text-right text-xs tabular-nums text-gray-500">
+                    {r.predicted_movement == null ? '—' : fmtLine(r.predicted_movement)}
+                  </div>
                   <div className="text-right text-gray-300 text-xs tabular-nums">
                     {r.projected_value == null ? '—' : fmtLine(r.projected_value)}
                   </div>
@@ -246,14 +274,25 @@ export default function CfbPanel({ season }) {
                         </div>
                       )
                     })()}
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 gap-y-4">
+                      <Field label="Kickoff" value={fmtDateFull(r.commence_time)} />
                       <Field label="Opening line" value={fmtLine(r.open_line)} />
+                      <Field label="Current line"
+                             value={r.closing_line == null ? 'not captured' : fmtLine(r.closing_line)}
+                             color={r.closing_line == null ? 'text-gray-500' : 'text-gray-100'} />
+                      <Field label="Moved so far"
+                             value={r.actual_movement == null ? '—'
+                                    : r.actual_movement === 0 ? 'no move yet' : fmtLine(r.actual_movement)}
+                             color={r.actual_movement ? 'text-gray-200' : 'text-gray-500'} />
+                      <Field label="Predicted move" value={r.predicted_movement == null ? '—' : fmtLine(r.predicted_movement)} />
                       <Field label="Model margin" value={r.projected_value == null ? '—' : fmtLine(r.projected_value)} />
                       <Field label="vs the line" value={dis == null ? '—' : fmtLine(dis)} />
-                      <Field label="Predicted move" value={r.predicted_movement == null ? '—' : fmtLine(r.predicted_movement)} />
+                      <Field label="Snapshots" value={r.n_snapshots ?? '—'}
+                             color="text-gray-500" />
                       <Field
                         label="CLV so far"
-                        value={r.clv_points == null ? 'pending' : fmtLine(r.clv_points)}
+                        value={r.predicted_side == null ? 'no side taken'
+                               : r.clv_points == null ? 'pending' : fmtLine(r.clv_points)}
                         color={r.clv_points == null ? 'text-gray-500'
                                : r.clv_points > 0 ? 'text-green-400'
                                : r.clv_points < 0 ? 'text-red-400' : 'text-gray-300'}
