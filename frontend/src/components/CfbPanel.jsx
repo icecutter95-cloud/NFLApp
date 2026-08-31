@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { AlertTriangle, Info, ChevronRight, ChevronDown } from 'lucide-react'
+import { AlertTriangle, Info, ChevronRight, ChevronDown, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 // College football. Deliberately has NO qualifying flag anywhere.
@@ -79,25 +79,77 @@ export default function CfbPanel({ season }) {
   // 40-point spreads where the model has the least to go on -- the extremes of a
   // distribution whose median disagreement is only 3.5 points.
   const [sort, setSort] = useState('time')
+  const [refresh, setRefresh] = useState(null)
+  const [refreshMsg, setRefreshMsg] = useState('')
+
+  async function load() {
+    const PAGE = 1000
+    let all = []
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from('cfb_tracking').select('*').eq('season', season)
+        .order('commence_time').range(from, from + PAGE - 1)
+      if (error || !data || data.length === 0) break
+      all = all.concat(data)
+      if (data.length < PAGE) break
+    }
+    setRows(all)
+  }
+
+  // Dispatches log-cfb, then polls for a newer predicted_at. A 200 from the
+  // trigger only means GitHub queued the job; the run itself takes a couple of
+  // minutes to install, pull the board, grade finished games and rescore.
+  async function refreshBoard() {
+    setRefresh('running'); setRefreshMsg('Starting…')
+    const before = rows.length
+      ? Math.max(...rows.map(r => +new Date(r.predicted_at || 0))) : 0
+    try {
+      const { error } = await supabase.functions.invoke('trigger-pipeline', {
+        body: { action: 'log-cfb' },
+      })
+      if (error) throw error
+      setRefreshMsg('Running (~3 min)…')
+      for (let i = 0; i < 45; i++) {
+        await new Promise(r => setTimeout(r, 6000))
+        const { data } = await supabase.from('cfb_tracking')
+          .select('predicted_at').eq('season', season)
+          .order('predicted_at', { ascending: false }).limit(1)
+        const latest = data?.[0] ? +new Date(data[0].predicted_at) : 0
+        if (latest > before) {
+          await load()
+          setRefresh('ok'); setRefreshMsg('Board updated')
+          setTimeout(() => setRefresh(null), 5000)
+          return
+        }
+      }
+      setRefresh('error'); setRefreshMsg('Timed out — check the Actions tab')
+    } catch (err) {
+      setRefresh('error'); setRefreshMsg('Failed to start')
+    }
+  }
+
+  // Record so far. Only games where a side was actually taken can be graded --
+  // the split third has no pick to win or lose.
+  const record = useMemo(() => {
+    const g = rows.filter(r => r.result)
+    if (!g.length) return null
+    const t = g.reduce((a, r) => (a[r.result] = (a[r.result] || 0) + 1, a), {})
+    const n = (t.win || 0) + (t.loss || 0)
+    const clv = rows.filter(r => r.clv_points != null)
+    return {
+      rec: `${t.win || 0}-${t.loss || 0}${t.push ? `-${t.push}` : ''}`,
+      pct: n ? `${((t.win || 0) / n * 100).toFixed(0)}%` : '—',
+      n,
+      played: rows.filter(r => r.home_score != null).length,
+      noSide: rows.filter(r => r.home_score != null && r.predicted_side == null).length,
+      avgClv: clv.length
+        ? (clv.reduce((a, r) => a + r.clv_points, 0) / clv.length).toFixed(2) : null,
+      clvN: clv.length,
+    }
+  }, [rows])
 
   useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      const PAGE = 1000
-      let all = []
-      for (let from = 0; ; from += PAGE) {
-        const { data, error } = await supabase
-          .from('cfb_tracking').select('*').eq('season', season)
-          .order('commence_time').range(from, from + PAGE - 1)
-        if (error || !data || data.length === 0) break
-        all = all.concat(data)
-        if (data.length < PAGE) break
-      }
-      if (!cancelled) { setRows(all); setLoading(false) }
-    }
-    load()
-    return () => { cancelled = true }
+    (async () => { setLoading(true); await load(); setLoading(false) })()
   }, [season])
 
   const visible = useMemo(() => {
@@ -125,7 +177,7 @@ export default function CfbPanel({ season }) {
     )
   }
 
-  const GRID = 'grid-cols-[24px_1fr_98px_122px_58px_62px_88px_74px_146px]'
+  const GRID = 'grid-cols-[24px_1fr_98px_122px_58px_62px_88px_74px_146px_46px]'
 
   return (
     <div className="p-4 space-y-4 max-w-6xl mx-auto">
@@ -176,7 +228,46 @@ export default function CfbPanel({ season }) {
           </button>
         ))}
         <span className="text-xs text-gray-600 ml-2">{rows.length} games</span>
+        <div className="ml-auto flex items-center gap-2 text-xs">
+          {refreshMsg && (
+            <span className={refresh === 'error' ? 'text-red-400'
+                           : refresh === 'ok' ? 'text-green-400' : 'text-gray-500'}>
+              {refreshMsg}
+            </span>
+          )}
+          <button onClick={refreshBoard} disabled={refresh === 'running'}
+                  title="Pull the current college board, grade finished games and rescore"
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded border ${
+                    refresh === 'running' ? 'border-gray-800 text-gray-600 cursor-not-allowed'
+                                          : 'border-gray-700 text-gray-300 hover:border-gray-500'}`}>
+            <RefreshCw size={11} className={refresh === 'running' ? 'animate-spin' : ''} />
+            {refresh === 'running' ? 'Refreshing…' : 'Refresh board'}
+          </button>
+        </div>
       </div>
+
+      {record && (
+        <div className="bg-gray-900 rounded border border-gray-800 px-4 py-3 text-xs space-y-2">
+          <div className="flex flex-wrap gap-x-6 gap-y-1">
+            <span className="text-gray-500">Graded so far:</span>
+            <span className="text-gray-300">
+              against the spread <span className="text-gray-100">{record.rec} ({record.pct})</span>
+            </span>
+            {record.avgClv != null && (
+              <span className="text-gray-300">
+                average CLV <span className="text-gray-100">{record.avgClv > 0 ? '+' : ''}{record.avgClv}</span>
+                <span className="text-gray-600"> over {record.clvN} picks</span>
+              </span>
+            )}
+          </div>
+          <div className="text-gray-600 leading-relaxed">
+            {record.played} game{record.played === 1 ? '' : 's'} final, of which {record.noSide} had no
+            side because the two models split. {record.n} bet{record.n === 1 ? '' : 's'} is far too few to
+            mean anything — the walk-forward estimate was 54.7% with an interval that still contains
+            break-even, so expect a long stretch before this record says much either way.
+          </div>
+        </div>
+      )}
 
       <div className="bg-gray-900 rounded border border-gray-800 overflow-hidden">
         <div className={`hidden md:grid ${GRID} gap-2 px-4 py-2 text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800`}>
@@ -189,6 +280,7 @@ export default function CfbPanel({ season }) {
           <span className="text-right">Model margin</span>
           <span className="text-right">vs line</span>
           <span className="text-right">Leans</span>
+          <span className="text-right">W/L</span>
         </div>
 
         <div className="divide-y divide-gray-800/50">
@@ -240,6 +332,16 @@ export default function CfbPanel({ season }) {
                   }`} title={side ? `Model backs ${side}` : 'The movement and margin models disagree, so the rule declines to pick'}>
                     {side ?? 'models split'}
                   </div>
+                  <div className="text-right text-xs">
+                    {r.result ? (
+                      <span className={`px-1 py-0.5 rounded text-[10px] uppercase ${
+                        r.result === 'win' ? 'bg-green-950 text-green-400'
+                        : r.result === 'loss' ? 'bg-red-950 text-red-400'
+                        : 'bg-gray-800 text-gray-400'}`}>
+                        {r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}
+                      </span>
+                    ) : <span className="text-gray-700">—</span>}
+                  </div>
                 </div>
 
                 {isOpen && (
@@ -276,6 +378,10 @@ export default function CfbPanel({ season }) {
                     })()}
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3 gap-y-4">
                       <Field label="Kickoff" value={fmtDateFull(r.commence_time)} />
+                      {r.home_score != null && (
+                        <Field label="Final"
+                               value={`${r.away_team} ${r.away_score} — ${r.home_team} ${r.home_score}`} />
+                      )}
                       <Field label="Opening line" value={fmtLine(r.open_line)} />
                       <Field label="Current line"
                              value={r.closing_line == null ? 'not captured' : fmtLine(r.closing_line)}

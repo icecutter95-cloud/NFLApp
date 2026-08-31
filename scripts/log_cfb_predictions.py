@@ -271,6 +271,13 @@ def main():
     form_cols = [f"diff_{c}" for c in FEATURE_COLS if f"diff_{c}" in X.columns]
     form_populated = bool(X[form_cols].abs().to_numpy().sum() > 0) if form_cols else False
 
+    # Stamped explicitly, not left to the column default. cfb_predictions upserts
+    # on (game_id, bet_type) and a DB default only fires on INSERT, so every
+    # re-run refreshed the numbers while predicted_at stayed pinned to the first
+    # run forever -- the tab could not report how fresh it was, and the Refresh
+    # button has nothing to poll for completion. Same bug preseason had.
+    now_iso = pd.Timestamp.now(tz="UTC").isoformat()
+
     rows = []
     withheld = 0
     for kind, model_name, line_col, market in [
@@ -321,6 +328,7 @@ def main():
                     "projected_value": round(float(margin[i]), 2),
                     "margin_disagreement": round(float(margin[i] + line), 3),
                     "predicted_side": side,
+                    "predicted_at": now_iso,
                     "taken_line": None if side is None else
                                   (float(line) if side == "home" else -float(line))})
             else:
@@ -346,7 +354,8 @@ def main():
                     "predicted_movement": None,
                     "projected_value": round(float(line + pred[i]), 2),
                     "margin_disagreement": None,
-                    "predicted_side": side, "taken_line": float(line)})
+                    "predicted_side": side, "taken_line": float(line),
+                    "predicted_at": now_iso})
 
     print(f"  CFBD calls: {_cache_stats['miss']} live, "
           f"{_cache_stats['hit']} cached, {_cache_stats['stale']} served stale")
