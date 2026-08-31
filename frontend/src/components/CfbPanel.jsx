@@ -79,6 +79,8 @@ export default function CfbPanel({ season }) {
   // 40-point spreads where the model has the least to go on -- the extremes of a
   // distribution whose median disagreement is only 3.5 points.
   const [sort, setSort] = useState('time')
+  const [status, setStatus] = useState('upcoming')
+  const [week, setWeek] = useState('all')
   const [refresh, setRefresh] = useState(null)
   const [refreshMsg, setRefreshMsg] = useState('')
 
@@ -174,15 +176,44 @@ export default function CfbPanel({ season }) {
     (async () => { setLoading(true); await load(); setLoading(false) })()
   }, [season])
 
+  // Played vs still to come. A game counts as final once it has a score, so
+  // rows never fall between the two buckets while grading catches up.
+  //
+  // Worth knowing: there is no "week 0" to filter on. CFBD labels the opening
+  // Friday/Saturday games as week 1, so week 1 here runs Aug 29 to Sep 7 and
+  // covers both the openers and the following weekend. Played-vs-upcoming is
+  // what actually separates the games already behind us.
+  const bucket = useMemo(() => ({
+    upcoming: rows.filter(r => r.home_score == null),
+    final: rows.filter(r => r.home_score != null),
+  }), [rows])
+
+  const pool = status === 'all' ? rows : bucket[status]
+
+  const weeks = useMemo(() => {
+    const seen = new Map()
+    for (const r of pool) {
+      const k = r.week ?? 'none'
+      seen.set(k, (seen.get(k) || 0) + 1)
+    }
+    return [...seen.entries()].sort((a, b) =>
+      a[0] === 'none' ? 1 : b[0] === 'none' ? -1 : a[0] - b[0])
+  }, [pool])
+
   const visible = useMemo(() => {
-    const s = [...rows]
+    let s = week === 'all' ? pool
+          : pool.filter(r => (r.week ?? 'none') === week)
+    s = [...s]
     if (sort === 'disagree') {
       s.sort((a, b) => Math.abs(b.margin_disagreement ?? 0) - Math.abs(a.margin_disagreement ?? 0))
+    } else if (status === 'final') {
+      // looking back: most recent first
+      s.sort((a, b) => new Date(b.commence_time) - new Date(a.commence_time))
     } else {
       s.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time))
     }
     return s
-  }, [rows, sort])
+  }, [pool, week, sort, status])
 
   if (loading) {
     return <div className="flex items-center justify-center h-48 text-gray-600 text-sm">Loading college football…</div>
@@ -239,7 +270,42 @@ export default function CfbPanel({ season }) {
         </span>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {[['upcoming', `Upcoming ${bucket.upcoming.length}`],
+          ['final', `Final ${bucket.final.length}`],
+          ['all', `All ${rows.length}`]].map(([k, l]) => (
+          <button key={k} onClick={() => { setStatus(k); setWeek('all') }}
+            className={`px-2 py-1.5 text-xs rounded border transition-colors ${
+              status === k ? 'border-gray-500 text-gray-200 bg-gray-800'
+                           : 'border-gray-800 text-gray-600 hover:border-gray-600'}`}>
+            {l}
+          </button>
+        ))}
+        {weeks.length > 1 && (
+          <>
+            <span className="text-gray-800 px-1">|</span>
+            <span className="text-xs text-gray-600">Week</span>
+            <button onClick={() => setWeek('all')}
+              className={`px-2 py-1.5 text-xs rounded border transition-colors ${
+                week === 'all' ? 'border-gray-500 text-gray-200 bg-gray-800'
+                               : 'border-gray-800 text-gray-600 hover:border-gray-600'}`}>
+              All
+            </button>
+            {weeks.map(([w, n]) => (
+              <button key={String(w)} onClick={() => setWeek(w)}
+                title={w === 'none' ? 'CFBD returned no week for this game' : `${n} games`}
+                className={`px-2 py-1.5 text-xs rounded border transition-colors ${
+                  week === w ? 'border-gray-500 text-gray-200 bg-gray-800'
+                             : 'border-gray-800 text-gray-600 hover:border-gray-600'}`}>
+                {w === 'none' ? '—' : w}
+                <span className="text-gray-700 ml-1">{n}</span>
+              </button>
+            ))}
+          </>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-gray-600">Sort</span>
         {[['disagree', 'Disagreement'], ['time', 'Kickoff']].map(([k, l]) => (
           <button key={k} onClick={() => setSort(k)}
@@ -249,7 +315,9 @@ export default function CfbPanel({ season }) {
             {l}
           </button>
         ))}
-        <span className="text-xs text-gray-600 ml-2">{rows.length} games</span>
+        <span className="text-xs text-gray-600 ml-2">
+          {visible.length} shown{visible.length !== rows.length && ` of ${rows.length}`}
+        </span>
         <div className="ml-auto flex items-center gap-2 text-xs">
           {refreshMsg && (
             <span className={refresh === 'error' ? 'text-red-400'
@@ -271,7 +339,7 @@ export default function CfbPanel({ season }) {
       {record && (
         <div className="bg-gray-900 rounded border border-gray-800 px-4 py-3 text-xs space-y-2">
           <div className="flex flex-wrap gap-x-6 gap-y-1">
-            <span className="text-gray-500">Tracking so far:</span>
+            <span className="text-gray-500">Season to date:</span>
             {record.hasGraded && (
               <span className="text-gray-300">
                 against the spread <span className="text-gray-100">{record.rec} ({record.pct})</span>
@@ -318,6 +386,13 @@ export default function CfbPanel({ season }) {
         </div>
 
         <div className="divide-y divide-gray-800/50">
+          {visible.length === 0 && (
+            <div className="px-4 py-6 text-center text-xs text-gray-600">
+              {status === 'final'
+                ? 'No games have finished yet.'
+                : 'Nothing matches this filter.'}
+            </div>
+          )}
           {visible.map(r => {
             const key = `${r.game_id}_${r.bet_type}`
             const isOpen = open === key
