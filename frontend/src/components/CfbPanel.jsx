@@ -96,12 +96,23 @@ export default function CfbPanel({ season }) {
     setRows(all)
   }
 
-  // Dispatches log-cfb, then polls for a newer predicted_at. A 200 from the
-  // trigger only means GitHub queued the job; the run itself takes a couple of
-  // minutes to install, pull the board, grade finished games and rescore.
+  // Dispatches log-cfb, then polls for completion.
+  //
+  // Completion is measured on cfb_line_history, not on predicted_at. The odds
+  // pull runs every time, but log_cfb_predictions exits early when CFBD is out
+  // of quota with nothing cached -- which is exactly the state it was in on
+  // 2026-08-31 -- so predicted_at can legitimately not move on a run that
+  // otherwise succeeded. Polling it meant the button never resolved on a job
+  // that had actually finished.
   async function refreshBoard() {
     setRefresh('running'); setRefreshMsg('Starting…')
-    const before = rows.length
+    const stamp = async () => {
+      const { data } = await supabase.from('cfb_line_history')
+        .select('recorded_at').order('recorded_at', { ascending: false }).limit(1)
+      return data?.[0] ? +new Date(data[0].recorded_at) : 0
+    }
+    const beforeLines = await stamp()
+    const beforePreds = rows.length
       ? Math.max(...rows.map(r => +new Date(r.predicted_at || 0))) : 0
     try {
       const { error } = await supabase.functions.invoke('trigger-pipeline', {
@@ -111,14 +122,16 @@ export default function CfbPanel({ season }) {
       setRefreshMsg('Running (~3 min)…')
       for (let i = 0; i < 45; i++) {
         await new Promise(r => setTimeout(r, 6000))
-        const { data } = await supabase.from('cfb_tracking')
-          .select('predicted_at').eq('season', season)
-          .order('predicted_at', { ascending: false }).limit(1)
-        const latest = data?.[0] ? +new Date(data[0].predicted_at) : 0
-        if (latest > before) {
+        if (await stamp() > beforeLines) {
           await load()
-          setRefresh('ok'); setRefreshMsg('Board updated')
-          setTimeout(() => setRefresh(null), 5000)
+          const { data } = await supabase.from('cfb_tracking')
+            .select('predicted_at').eq('season', season)
+            .order('predicted_at', { ascending: false }).limit(1)
+          const movedPreds = data?.[0] && +new Date(data[0].predicted_at) > beforePreds
+          setRefresh('ok')
+          setRefreshMsg(movedPreds ? 'Board updated'
+                                   : 'Lines and results updated — projections unchanged')
+          setTimeout(() => setRefresh(null), 8000)
           return
         }
       }
