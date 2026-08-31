@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { AlertTriangle, Info, ChevronRight, ChevronDown, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { moveClass, moveTitle } from '../lib/movement'
 
 // College football. Deliberately has NO qualifying flag anywhere.
 //
@@ -423,9 +424,11 @@ export default function CfbPanel({ season }) {
                     </span>
                   </div>
                   <div className={`text-right text-xs tabular-nums ${
-                    !r.actual_movement ? 'text-gray-700' : 'text-gray-200'
-                  }`}>{r.actual_movement == null ? '—'
-                       : r.actual_movement === 0 ? '0.0' : fmtLine(r.actual_movement)}</div>
+                    !r.actual_movement ? 'text-gray-700' : moveClass(r, 'text-gray-200')
+                  }`} title={moveTitle(r)}>
+                    {r.actual_movement == null ? '—'
+                     : r.actual_movement === 0 ? '0.0' : fmtLine(r.actual_movement)}
+                  </div>
                   <div className="text-right text-xs tabular-nums text-gray-500">
                     {r.predicted_movement == null ? '—' : fmtLine(r.predicted_movement)}
                   </div>
@@ -498,7 +501,7 @@ export default function CfbPanel({ season }) {
                       <Field label="Moved so far"
                              value={r.actual_movement == null ? '—'
                                     : r.actual_movement === 0 ? 'no move yet' : fmtLine(r.actual_movement)}
-                             color={r.actual_movement ? 'text-gray-200' : 'text-gray-500'} />
+                             color={r.actual_movement ? moveClass(r, 'text-gray-200') : 'text-gray-500'} />
                       <Field label="Predicted move" value={r.predicted_movement == null ? '—' : fmtLine(r.predicted_movement)} />
                       <Field label="Model margin" value={r.projected_value == null ? '—' : fmtLine(r.projected_value)} />
                       <Field label="vs the line" value={dis == null ? '—' : fmtLine(dis)} />

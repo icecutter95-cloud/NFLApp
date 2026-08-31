@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, Info, Target, AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { moveClass, moveTitle } from '../lib/movement'
 
 // This view tracks the LINE MOVEMENT model, which is a different question from
 // the Edges tab. Edges asks "who covers?" — we measured that against closing
@@ -280,7 +281,7 @@ function RowDetail({ row, books, quotes, loading, age }) {
         <Field
           label="Moved so far"
           value={row.actual_movement == null ? 'no move yet' : fmtLine(row.actual_movement)}
-          color={row.actual_movement ? 'text-gray-200' : 'text-gray-500'}
+          color={row.actual_movement ? moveClass(row, 'text-gray-200') : 'text-gray-500'}
         />
         <Field
           label="CLV"
@@ -703,7 +704,8 @@ export default function ClvPanel({ season }) {
                   </div>
                 </div>
                 <div className="text-right text-gray-400 text-xs tabular-nums">{fmt(r.closing_line)}</div>
-                <div className="text-right text-xs tabular-nums text-gray-400">
+                <div className={`text-right text-xs tabular-nums ${moveClass(r)}`}
+                     title={moveTitle(r)}>
                   {r.actual_movement == null ? '—' : fmtLine(r.actual_movement)}
                 </div>
                 <div className={`text-right text-xs tabular-nums font-medium ${
