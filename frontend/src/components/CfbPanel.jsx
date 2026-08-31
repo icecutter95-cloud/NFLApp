@@ -141,15 +141,20 @@ export default function CfbPanel({ season }) {
     }
   }
 
-  // Record so far. Only games where a side was actually taken can be graded --
-  // the split third has no pick to win or lose.
+  // Record so far: the bet result, the CLV, and -- separately -- whether the
+  // movement model got the DIRECTION right. Direction is the cleaner read on
+  // that model, because CLV mixes being right about which way the number moves
+  // with how far it happens to travel.
   const record = useMemo(() => {
-    const g = rows.filter(r => r.result)
-    if (!g.length) return null
-    const t = g.reduce((a, r) => (a[r.result] = (a[r.result] || 0) + 1, a), {})
-    const n = (t.win || 0) + (t.loss || 0)
+    const graded = rows.filter(r => r.result)
     const clv = rows.filter(r => r.clv_points != null)
+    const dir = rows.filter(r => r.direction_correct != null)
+    if (!graded.length && !clv.length && !dir.length) return null
+    const t = graded.reduce((a, r) => (a[r.result] = (a[r.result] || 0) + 1, a), {})
+    const n = (t.win || 0) + (t.loss || 0)
+    const dRight = dir.filter(r => r.direction_correct).length
     return {
+      hasGraded: graded.length > 0,
       rec: `${t.win || 0}-${t.loss || 0}${t.push ? `-${t.push}` : ''}`,
       pct: n ? `${((t.win || 0) / n * 100).toFixed(0)}%` : '—',
       n,
@@ -158,6 +163,10 @@ export default function CfbPanel({ season }) {
       avgClv: clv.length
         ? (clv.reduce((a, r) => a + r.clv_points, 0) / clv.length).toFixed(2) : null,
       clvN: clv.length,
+      dirRec: `${dRight}-${dir.length - dRight}`,
+      dirPct: dir.length ? `${(dRight / dir.length * 100).toFixed(0)}%` : null,
+      dirN: dir.length,
+      flat: rows.filter(r => r.closing_line != null && r.direction_correct == null).length,
     }
   }, [rows])
 
@@ -262,22 +271,34 @@ export default function CfbPanel({ season }) {
       {record && (
         <div className="bg-gray-900 rounded border border-gray-800 px-4 py-3 text-xs space-y-2">
           <div className="flex flex-wrap gap-x-6 gap-y-1">
-            <span className="text-gray-500">Graded so far:</span>
-            <span className="text-gray-300">
-              against the spread <span className="text-gray-100">{record.rec} ({record.pct})</span>
-            </span>
+            <span className="text-gray-500">Tracking so far:</span>
+            {record.hasGraded && (
+              <span className="text-gray-300">
+                against the spread <span className="text-gray-100">{record.rec} ({record.pct})</span>
+              </span>
+            )}
+            {record.dirPct && (
+              <span className="text-gray-300">
+                movement direction <span className="text-gray-100">{record.dirRec} ({record.dirPct})</span>
+              </span>
+            )}
             {record.avgClv != null && (
               <span className="text-gray-300">
                 average CLV <span className="text-gray-100">{record.avgClv > 0 ? '+' : ''}{record.avgClv}</span>
-                <span className="text-gray-600"> over {record.clvN} picks</span>
+                <span className="text-gray-600"> over {record.clvN}</span>
               </span>
             )}
           </div>
           <div className="text-gray-600 leading-relaxed">
-            {record.played} game{record.played === 1 ? '' : 's'} final, of which {record.noSide} had no
-            side because the two models split. {record.n} bet{record.n === 1 ? '' : 's'} is far too few to
-            mean anything — the walk-forward estimate was 54.7% with an interval that still contains
-            break-even, so expect a long stretch before this record says much either way.
+            Direction is scored separately from CLV, and is the cleaner read on the movement model —
+            CLV mixes being right about which way a number moves with how far it happens to travel.
+            {record.flat > 0 && ` ${record.flat} games are excluded because the line has not moved half a point,
+            which is the smallest tick the market trades in.`}
+            {record.hasGraded
+              ? ` ${record.played} final, ${record.noSide} with no side because the models split.`
+              : ' No games have finished yet.'}
+            {' '}Samples this small say nothing either way — the walk-forward estimate was 54.7% with an
+            interval that still contains break-even.
           </div>
         </div>
       )}
@@ -406,6 +427,11 @@ export default function CfbPanel({ season }) {
                       <Field label="Predicted move" value={r.predicted_movement == null ? '—' : fmtLine(r.predicted_movement)} />
                       <Field label="Model margin" value={r.projected_value == null ? '—' : fmtLine(r.projected_value)} />
                       <Field label="vs the line" value={dis == null ? '—' : fmtLine(dis)} />
+                      <Field label="Direction so far"
+                             value={r.direction_correct == null ? 'no move yet'
+                                    : r.direction_correct ? 'right' : 'wrong'}
+                             color={r.direction_correct == null ? 'text-gray-500'
+                                    : r.direction_correct ? 'text-green-400' : 'text-red-400'} />
                       <Field label="Snapshots" value={r.n_snapshots ?? '—'}
                              color="text-gray-500" />
                       <Field
