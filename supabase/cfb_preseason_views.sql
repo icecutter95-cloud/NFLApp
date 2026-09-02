@@ -44,3 +44,19 @@ create table if not exists public.preseason_results (
 
 -- See supabase migrations cfb_open_close_one_row_per_game and
 -- cfb_tracking_join_on_game_id for the full view bodies as applied.
+
+-- 5. cfb_public_splits  -- hand-captured bets%/money%, applied 2026-08-31.
+-- 6. cfb_signal         -- model lean x public money x line movement.
+--
+-- There is no automated source for splits. Action Network's are a proprietary
+-- product behind Cloudflare and JS rendering, and every free feed checked
+-- (ESPN scoreboard, game summary, pickcenter) carries prices but no ticket or
+-- money percentages. Captures come from a person reading the page and running
+-- scripts/record_cfb_splits.py; captured_at is the OBSERVATION time so a
+-- capture pairs with the line snapshot live at that moment.
+--
+-- cfb_signal classifies observable facts and claims nothing about which bucket
+-- wins. Buckets: reverse line movement (minority tickets, number still moved to
+-- us), sharp agreement (money share exceeds ticket share by 10+), public side
+-- (popular and already moved), public trap (popular and moved away), against
+-- the money.

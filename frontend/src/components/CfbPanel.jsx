@@ -63,6 +63,22 @@ function sideDetail(r) {
   return { agree: false, team: null, num: null, mvTeam, disTeam }
 }
 
+// Public splits crossed with line movement. Loaded separately from the board
+// because splits are captured by hand and only ever cover a handful of games.
+//
+// The tone ranking is about how the money lines up with our side, NOT a claim
+// that any bucket wins more often -- there is no evidence for that here yet,
+// which is the entire reason the captures are being logged.
+const SIGNAL_TONE = {
+  'reverse line movement':          'text-green-400',
+  'sharp agreement':                'text-green-400',
+  'public side, number likely gone':'text-amber-300',
+  'public trap':                    'text-red-400',
+  'against the money':              'text-red-400',
+  'neutral':                        'text-gray-400',
+  'no move yet':                    'text-gray-500',
+}
+
 function Field({ label, value, color }) {
   return (
     <div>
@@ -74,6 +90,7 @@ function Field({ label, value, color }) {
 
 export default function CfbPanel({ season }) {
   const [rows, setRows] = useState([])
+  const [signals, setSignals] = useState({})
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(null)
   // Defaults to kickoff, not disagreement. Sorting by disagreement leads with
@@ -86,6 +103,10 @@ export default function CfbPanel({ season }) {
   const [refreshMsg, setRefreshMsg] = useState('')
 
   async function load() {
+    const sig = await supabase.from('cfb_signal').select('*').eq('season', season)
+      .not('our_bets_pct', 'is', null)
+    setSignals(Object.fromEntries(
+      (sig.data ?? []).map(r => [`${r.game_id}_${r.bet_type}`, r])))
     const PAGE = 1000
     let all = []
     for (let from = 0; ; from += PAGE) {
@@ -403,6 +424,7 @@ export default function CfbPanel({ season }) {
             const side = r.predicted_side == null ? null
                        : r.predicted_side === 'home' ? r.home_team : r.away_team
             const dis = r.margin_disagreement
+            const sig = signals[key]
             return (
               <div key={key}>
                 <div role="button" tabIndex={0}
@@ -442,6 +464,12 @@ export default function CfbPanel({ season }) {
                   <div className={`text-right text-xs truncate ${
                     side ? 'text-gray-300' : 'text-gray-600 italic'
                   }`} title={side ? `Model backs ${side}` : 'The movement and margin models disagree, so the rule declines to pick'}>
+                    {sig && sig.signal && sig.signal !== 'no move yet' && (
+                      <span className={`mr-1 ${SIGNAL_TONE[sig.signal] ?? 'text-gray-500'}`}
+                            title={`${sig.signal} — ${sig.our_bets_pct}% of tickets, ${sig.our_money_pct}% of money on this side`}>
+                        ●
+                      </span>
+                    )}
                     {side ?? 'models split'}
                   </div>
                   <div className="text-right text-xs">
@@ -521,6 +549,28 @@ export default function CfbPanel({ season }) {
                                : r.clv_points < 0 ? 'text-red-400' : 'text-gray-300'}
                       />
                     </div>
+                    {sig && (
+                      <div className="mt-3 text-xs bg-gray-900/50 border-l-2 border-gray-700 pl-3 py-2">
+                        <span className="text-gray-500">Public money: </span>
+                        <span className={SIGNAL_TONE[sig.signal] ?? 'text-gray-300'}>{sig.signal}</span>
+                        <div className="text-gray-500 mt-1">
+                          {side} has <span className="text-gray-200">{sig.our_bets_pct}%</span> of tickets
+                          and <span className="text-gray-200">{sig.our_money_pct}%</span> of money
+                          {sig.handle_gap != null && (
+                            <span className="text-gray-600">
+                              {' '}({sig.handle_gap > 0 ? '+' : ''}{sig.handle_gap} handle gap
+                              {sig.handle_gap >= 10 ? ' — fewer, larger bets' : ''})
+                            </span>
+                          )}
+                          , and the number has moved {fmtLine(sig.actual_movement)}.
+                          <span className="block mt-1 text-gray-600">
+                            Captured {new Date(sig.splits_captured_at).toLocaleString(undefined,
+                              { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} from {sig.splits_source.replace('_', ' ')}.
+                            Descriptive only — no bucket here has been shown to win more often.
+                          </span>
+                        </div>
+                      </div>
+                    )}
                     <p className="text-[11px] text-gray-600 mt-3">
                       Week 1 predictions rest entirely on preseason inputs — prior-season SP+ and FPI,
                       recruiting talent, returning production and carried-over Elo. There is no in-season form
