@@ -44,10 +44,25 @@ response time to recover roughly when the numbers were generated. captured_at is
 the OBSERVATION time, which is what pairs a capture with the line snapshot that
 was live beside it.
 
+Where this can run
+------------------
+NOT on GitHub Actions. Verified 2026-09-06 by running both within minutes of
+each other: a residential connection gets all 99 games, a runner gets a page
+with no __NEXT_DATA__ at all. Action Network evidently serves datacenter IPs
+something else. The workflow keeps the step as continue-on-error so the board
+and the grading are unaffected; in practice it will always skip there.
+
+To collect this automatically, run it from a home machine on a schedule --
+Windows Task Scheduler, twice a day is plenty for a weekly sport:
+
+    schtasks /create /tn "CFB splits" /tr ^
+      "cmd /c cd /d C:\\Users\\icecu\\OneDrive\\Documents\\NFLApp && ^
+       python scripts\\fetch_cfb_splits.py" /sc daily /st 09:00 /ri 720 /du 24:00
+
 Usage:
     python fetch_cfb_splits.py
     python fetch_cfb_splits.py --dry-run
-    python fetch_cfb_splits.py --books 68,15     # default: every book with data
+    python fetch_cfb_splits.py --books 68,15     # default: consensus only
 """
 
 import json
@@ -90,7 +105,13 @@ def fetch():
     m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
                   r.text, re.S)
     if not m:
-        raise RuntimeError("__NEXT_DATA__ not found -- page structure changed")
+        raise RuntimeError(
+            "__NEXT_DATA__ not found. Almost certainly the IP, not the markup: "
+            "this returns the full payload from a residential connection and "
+            "nothing at all from a GitHub Actions runner, verified by running "
+            "both within a few minutes of each other on 2026-09-06. Run it from "
+            "a home machine, or a self-hosted runner on one. If it also fails "
+            "locally, then the page really did change.")
     data = json.loads(m.group(1))
     age = int(r.headers.get("age") or 0)
     observed = datetime.now(timezone.utc) - timedelta(seconds=age)
