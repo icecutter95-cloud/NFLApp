@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, Info, Target, AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { moveClass, moveTitle } from '../lib/movement'
+import { SIGNAL_TONE, signalText } from '../lib/signal'
 
 // This view tracks the LINE MOVEMENT model, which is a different question from
 // the Edges tab. Edges asks "who covers?" — we measured that against closing
@@ -208,7 +209,7 @@ function timingCall(row) {
 
 // Everything we know about one line, opened up: how the model got here, where
 // the number has travelled, and what every book is currently offering.
-function RowDetail({ row, books, quotes, loading, age }) {
+function RowDetail({ row, books, quotes, loading, age, sig }) {
   const isTotal = row.bet_type === 'total'
   const fmt = isTotal ? fmtNum : fmtLine
   const side = row.predicted_side
@@ -270,6 +271,19 @@ function RowDetail({ row, books, quotes, loading, age }) {
               <span className="text-gray-300">{timing.text}</span>
             </div>
           )}
+        </div>
+      )}
+
+      {sig && (
+        <div className="text-xs leading-relaxed bg-gray-900/50 border-l-2 border-gray-700 pl-3 py-2">
+          <span className="text-gray-500">Public money: </span>
+          <span className={SIGNAL_TONE[sig.signal] ?? 'text-gray-300'}>{sig.signal}</span>
+          <div className="text-gray-500 mt-1">{signalText(sig)}</div>
+          <div className="text-gray-600 mt-1">
+            Action Network consensus, captured {new Date(sig.splits_captured_at).toLocaleString(undefined,
+              { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
+            Descriptive only — no bucket here has been shown to win more often.
+          </div>
         </div>
       )}
 
@@ -400,6 +414,7 @@ function RowDetail({ row, books, quotes, loading, age }) {
 
 export default function ClvPanel({ season }) {
   const [rows, setRows] = useState([])
+  const [signals, setSignals] = useState({})
   const [loading, setLoading] = useState(true)
   const [qualifyingOnly, setQualifyingOnly] = useState(false)
   const [tab, setTab] = useState('all')
@@ -441,7 +456,15 @@ export default function ClvPanel({ season }) {
       const byPair = {}
       for (const b of bb ?? []) byPair[`${b.away_team}@${b.home_team}`] = b
 
-      if (!cancelled) { setRows(all); setBest(byPair); setLoading(false) }
+      // Splits are a separate, best-effort source -- the board must render
+      // whether or not they were collected.
+      const sig = await supabase.from('nfl_signal').select('*')
+        .eq('season', season).not('our_bets_pct', 'is', null)
+      if (!cancelled) {
+        setSignals(Object.fromEntries(
+          (sig.data ?? []).map(r => [`${r.game_id}_${r.bet_type}`, r])))
+        setRows(all); setBest(byPair); setLoading(false)
+      }
     }
     load()
     return () => { cancelled = true }
@@ -732,7 +755,8 @@ export default function ClvPanel({ season }) {
               </div>
               {isOpen && (
                 <RowDetail row={r} books={best[pair]} quotes={quotes[pair]}
-                           loading={loadingQuotes && !quotes[pair]} age={age} />
+                           loading={loadingQuotes && !quotes[pair]} age={age}
+                           sig={signals[`${r.game_id}_${r.bet_type}`]} />
               )}
               </div>
             )

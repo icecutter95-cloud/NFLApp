@@ -56,6 +56,16 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python scripts/download_models.py
 
+      - name: Fetch public betting splits
+        # Best effort, and in practice it will always skip here: Action Network
+        # returns nothing to a datacenter IP. Kept so the step exists if that
+        # ever changes; real collection runs from a home machine.
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/fetch_nfl_splits.py
+
       - name: Log CLV predictions
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
