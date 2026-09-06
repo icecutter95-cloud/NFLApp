@@ -60,6 +60,16 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python scripts/fetch_cfb_odds.py
 
+      - name: Fetch public betting splits
+        # Best effort. Action Network is a third-party page, not a contracted
+        # feed -- if its markup changes or a datacenter IP gets refused, the
+        # board and the grading still matter more than the splits do.
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/fetch_cfb_splits.py
+
       - name: Grade finished college games
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
