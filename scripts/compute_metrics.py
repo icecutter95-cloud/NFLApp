@@ -34,6 +34,15 @@ except ImportError:
 
 warnings.filterwarnings("ignore")
 
+
+class SeasonNotPlayedYet(RuntimeError):
+    """No play-by-play exists for this season yet.
+
+    Raised when nflverse 404s or returns nothing, which is what happens for the
+    current season before week 1. It is a normal state, not a fault, so callers
+    skip the season rather than aborting the whole run.
+    """
+
 from config import DATA_DIR, ALL_HISTORICAL_SEASONS
 
 
@@ -634,7 +643,23 @@ def _load_pbp(season: int) -> pd.DataFrame:
         print(f"  Loading {season} PBP from local cache...")
         return pd.read_parquet(cache_path)
     print(f"  Downloading {season} PBP from nfl_data_py (first run, this takes a few minutes)...")
-    pbp = nfl.import_pbp_data([season], downcast=True, cache=False, include_participation=False)
+    try:
+        pbp = nfl.import_pbp_data([season], downcast=True, cache=False,
+                                  include_participation=False)
+    except Exception as e:
+        # nflverse 404s a season that has not started. Surface that as the
+        # ordinary situation it is rather than a download stack trace.
+        raise SeasonNotPlayedYet(
+            f"{season} play-by-play is not published yet ({type(e).__name__})") from e
+
+    # Never cache an empty or column-less frame. Doing so poisons the cache: the
+    # next run finds the file, skips the download, and fails on a missing column
+    # forever -- including after the real data lands.
+    if pbp is None or pbp.empty or "play_type" not in pbp.columns:
+        raise SeasonNotPlayedYet(
+            f"{season} play-by-play came back empty "
+            f"({0 if pbp is None else len(pbp):,} plays)")
+
     pbp.to_parquet(cache_path, index=False)
     print(f"  Cached -> {cache_path.name}")
     return pbp
@@ -732,10 +757,22 @@ def main():
             print(f"--force: recomputing {season} (deleting cached file)")
             out_path.unlink()
 
-        df = build_team_metrics_for_season(season)
+        try:
+            df = build_team_metrics_for_season(season)
+        except SeasonNotPlayedYet as e:
+            # Asking for the current season before week 1 is a normal thing to
+            # do, not an error. Skip it and carry on with the seasons that do
+            # exist, so the upload step still runs.
+            print(f"  {e} — skipping. Until it is played, the model correctly "
+                  f"carries prior-season strength.")
+            continue
         df.to_parquet(out_path, index=False)
         print(f"  Saved -> {out_path}")
         all_frames.append(df)
+
+    if not all_frames:
+        print("\nNo seasons had data. Nothing written.")
+        return
 
     combined = pd.concat(all_frames, ignore_index=True)
     combined_path = DATA_DIR / "team_metrics_all.parquet"
