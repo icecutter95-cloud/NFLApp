@@ -18,7 +18,19 @@ import warnings
 import numpy as np
 import pandas as pd
 import nfl_data_py as nfl
-from tqdm import tqdm
+
+# tqdm is a progress bar and nothing else -- it wraps one loop over weeks. It is
+# not in requirements-ci.txt, so every Update Metrics run since 2026-08-03 died
+# on this import before computing anything, and the upload step behind it never
+# ran once. Rather than add a package (which would change that file's hash, and
+# with it the pip cache key for the workflows that produce every validated
+# number here), degrade to a plain iterator. A progress bar in a non-interactive
+# CI log was never doing any work anyway.
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable=None, **kwargs):
+        return iterable if iterable is not None else []
 
 warnings.filterwarnings("ignore")
 
