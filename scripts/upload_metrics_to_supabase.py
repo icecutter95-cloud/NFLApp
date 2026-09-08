@@ -89,7 +89,15 @@ def upload(df: pd.DataFrame):
 def main():
     path = DATA_DIR / "team_metrics_all.parquet"
     if not path.exists():
-        raise FileNotFoundError(f"{path} not found — run compute_metrics.py first")
+        # Not an error when it follows a compute step that had nothing to do.
+        # On a CI runner nothing is cached, so asking for a season that has not
+        # been played leaves no file behind at all -- the correct outcome is an
+        # empty upload, not a failed workflow. A local run that genuinely
+        # skipped compute_metrics still gets told what to do about it.
+        print(f"{path.name} not found — nothing to upload.")
+        print("  Expected when the requested season has not been played yet.")
+        print("  Otherwise: run compute_metrics.py first.")
+        return
 
     df = pd.read_parquet(path)
 
