@@ -57,7 +57,14 @@ def fetch(league):
     # numbers were generated. captured_at is the OBSERVATION time, which is what
     # pairs a capture with the line snapshot that was live beside it.
     age = int(r.headers.get("age") or 0)
-    observed = datetime.now(timezone.utc) - timedelta(seconds=age)
+    # Floored to the minute on purpose. captured_at is part of the unique key,
+    # so a sub-second difference between two fetches of the SAME cached page
+    # stored the same observation twice -- 64 rows for 32 real observations on
+    # 2026-09-06, which would have silently doubled n in the movement test and
+    # halved its error bars. Flooring makes repeat fetches within a cache window
+    # collapse onto one row, which is what they are.
+    observed = (datetime.now(timezone.utc) - timedelta(seconds=age)
+                ).replace(second=0, microsecond=0)
     props = data["props"]["pageProps"]
     books = {str(k): v.get("display_name")
              for k, v in (props.get("allBooks") or {}).items()}

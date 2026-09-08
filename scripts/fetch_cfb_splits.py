@@ -75,6 +75,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 
+from action_splits import fetch, outcomes, kickoff, CONSENSUS_BOOK
 from cfb_teams import to_key, cfbd_to_key
 from score_week import supabase
 
@@ -99,28 +100,6 @@ def team_key(team):
     return None
 
 
-def fetch():
-    r = requests.get(URL, headers={"User-Agent": UA}, timeout=90)
-    r.raise_for_status()
-    m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-                  r.text, re.S)
-    if not m:
-        raise RuntimeError(
-            "__NEXT_DATA__ not found. Almost certainly the IP, not the markup: "
-            "this returns the full payload from a residential connection and "
-            "nothing at all from a GitHub Actions runner, verified by running "
-            "both within a few minutes of each other on 2026-09-06. Run it from "
-            "a home machine, or a self-hosted runner on one. If it also fails "
-            "locally, then the page really did change.")
-    data = json.loads(m.group(1))
-    age = int(r.headers.get("age") or 0)
-    observed = datetime.now(timezone.utc) - timedelta(seconds=age)
-    props = data["props"]["pageProps"]
-    books = {str(k): v.get("display_name")
-             for k, v in (props.get("allBooks") or {}).items()}
-    return props["scoreboardResponse"]["games"], books, observed, age
-
-
 # Consensus only by default. Every other book id on this payload repeats the
 # same numbers, so storing all eight would be one source wearing eight hats --
 # and would make any later "the books disagree" analysis a measurement of
@@ -141,7 +120,7 @@ def main():
     dry = "--dry-run" in sys.argv
     want = wanted_books(sys.argv)
 
-    games, books, observed, age = fetch()
+    games, books, observed, age = fetch('ncaaf')
     print(f"Action Network: {len(games)} games, page {age}s old "
           f"(generated ~{observed.isoformat()[:19]}Z)")
 
@@ -164,7 +143,7 @@ def main():
         cands = by_pair.get((home, away))
         if not cands:
             continue
-        kick = datetime.fromisoformat(g["start_time"].replace("Z", "+00:00")).date()
+        kick = kickoff(g)
         hit = [c for c in cands
                if abs((datetime.fromisoformat(c["commence_time"]).date() - kick).days) <= 1]
         if not hit:
@@ -172,38 +151,12 @@ def main():
         assert len(hit) == 1, f"{away} @ {home} matched {len(hit)} board games"
         gid = hit[0]["game_id"]
 
-        for bid, mk in (g.get("markets") or {}).items():
-            if want and bid not in want:
-                continue
-            ev = mk.get("event") or {}
-            for market in ("spread", "total"):
-                # A side can appear twice, once as an empty (0, 0) placeholder.
-                # Taking the last occurrence would silently store zeros, so keep
-                # whichever entry actually carries a ticket percentage.
-                pick = {}
-                for o in ev.get(market) or []:
-                    bi = o.get("bet_info") or {}
-                    side = o.get("side")
-                    if side not in ("home", "away", "over", "under"):
-                        continue
-                    cand = ((bi.get("tickets") or {}).get("percent"),
-                            (bi.get("money") or {}).get("percent"),
-                            o.get("value"))
-                    if side not in pick or (not pick[side][0] and cand[0]):
-                        pick[side] = cand
-                if market == "spread":
-                    a, b = pick.get("home"), pick.get("away")
-                else:
-                    # over/under reuse the home/away columns: home = over.
-                    a, b = pick.get("over"), pick.get("under")
-                if not a or not b or not (a[0] or b[0]):
-                    continue
+        for bid in (want or {CONSENSUS_BOOK}):
+            for market, vals in outcomes(g, bid).items():
                 rows.append({
                     "game_id": gid, "captured_at": observed.isoformat(),
                     "source": f"action_network:{bid}", "bet_type": market,
-                    "home_bets_pct": a[0], "away_bets_pct": b[0],
-                    "home_money_pct": a[1], "away_money_pct": b[1],
-                    "line_at_capture": a[2], "note": books.get(bid),
+                    "note": books.get(bid), **vals,
                 })
                 matched.add(gid)
 
