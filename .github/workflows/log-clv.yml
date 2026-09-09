@@ -48,7 +48,12 @@ jobs:
           cache-dependency-path: requirements-ci.txt
 
       - name: Install dependencies
-        run: pip install -r requirements-ci.txt
+        # requests is appended rather than added to requirements-ci.txt, whose
+        # hash is the pip cache key for every workflow here. score_week imports
+        # it transitively via fetch_historical_weather for stadium coordinates,
+        # and without it _stadium_coords swallowed the ImportError and served
+        # away_travel_miles = 0 on every CI-logged prediction.
+        run: pip install -r requirements-ci.txt requests
 
       - name: Download models from Supabase Storage
         env:

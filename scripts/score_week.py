@@ -234,9 +234,33 @@ def _haversine_miles(lat1, lon1, lat2, lon2) -> float:
     return float(2 * R * np.arcsin(np.sqrt(a)))
 
 
+_coord_failure_reported = False
+
+
 def _stadium_coords(team: str, season: int):
+    """Stadium lat/lon, or None.
+
+    The bare except here used to hide the difference between "this team has no
+    coordinates" and "the module that provides them could not even be
+    imported". On CI it was the latter: fetch_historical_weather imports
+    requests, requests was not installed, and every caller silently received
+    None -- which build_feature_matrix turns into away_travel_miles = 0.0 for
+    every game. The model trains on real distances and was being served zeros,
+    which is exactly the train/serve skew the all-zero warning exists to catch.
+    Say it once, loudly, rather than letting the downstream warning be the only
+    trace of a fixable cause.
+    """
+    global _coord_failure_reported
     try:
         from fetch_historical_weather import get_stadium_coords
+    except Exception as e:
+        if not _coord_failure_reported:
+            _coord_failure_reported = True
+            print(f"  ERROR: stadium coordinates unavailable ({type(e).__name__}: {e}). "
+                  f"travel/timezone features will be ZERO for every game — "
+                  f"install the missing dependency before trusting these picks.")
+        return None
+    try:
         return get_stadium_coords(team, season)
     except Exception:
         return None
