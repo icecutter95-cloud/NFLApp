@@ -99,6 +99,7 @@ export default function CfbPanel({ season }) {
   const [sort, setSort] = useState('time')
   const [status, setStatus] = useState('upcoming')
   const [week, setWeek] = useState('all')
+  const [lean, setLean] = useState('all')
   const [refresh, setRefresh] = useState(null)
   const [refreshMsg, setRefreshMsg] = useState('')
 
@@ -210,7 +211,23 @@ export default function CfbPanel({ season }) {
     final: rows.filter(r => r.home_score != null),
   }), [rows])
 
-  const pool = status === 'all' ? rows : bucket[status]
+  const statusPool = status === 'all' ? rows : bucket[status]
+
+  // A "lean" is a game where the movement and margin models agree; the rule
+  // declines the rest, so predicted_side is null on roughly a third of the
+  // board. Filtering on it is the difference between reading 148 games and
+  // reading the 99 the model will actually commit to.
+  const leanCounts = useMemo(() => ({
+    all: statusPool.length,
+    lean: statusPool.filter(r => r.predicted_side != null).length,
+    split: statusPool.filter(r => r.predicted_side == null).length,
+  }), [statusPool])
+
+  const pool = useMemo(() => (
+    lean === 'lean'  ? statusPool.filter(r => r.predicted_side != null)
+  : lean === 'split' ? statusPool.filter(r => r.predicted_side == null)
+  : statusPool
+  ), [statusPool, lean])
 
   const weeks = useMemo(() => {
     const seen = new Map()
@@ -252,7 +269,9 @@ export default function CfbPanel({ season }) {
     )
   }
 
-  const GRID = 'grid-cols-[24px_1fr_98px_122px_58px_62px_88px_74px_146px_46px]'
+  // kickoff widened from 98px: the board now runs to late November after the
+  // pagination fix, and a two-digit month ("Sat 11/28 10:00a") needs 106.
+  const GRID = 'grid-cols-[24px_1fr_110px_122px_58px_62px_88px_74px_146px_46px]'
 
   return (
     <div className="p-4 space-y-4 max-w-6xl mx-auto">
@@ -296,10 +315,21 @@ export default function CfbPanel({ season }) {
         {[['upcoming', `Upcoming ${bucket.upcoming.length}`],
           ['final', `Final ${bucket.final.length}`],
           ['all', `All ${rows.length}`]].map(([k, l]) => (
-          <button key={k} onClick={() => { setStatus(k); setWeek('all') }}
+          <button key={k} onClick={() => { setStatus(k); setWeek('all'); setLean('all') }}
             className={`px-2 py-1.5 text-xs rounded border transition-colors ${
               status === k ? 'border-gray-500 text-gray-200 bg-gray-800'
                            : 'border-gray-800 text-gray-600 hover:border-gray-600'}`}>
+            {l}
+          </button>
+        ))}
+        <span className="text-gray-800 px-1">|</span>
+        {[['all', `All ${leanCounts.all}`],
+          ['lean', `Has a lean ${leanCounts.lean}`],
+          ['split', `Models split ${leanCounts.split}`]].map(([k, l]) => (
+          <button key={k} onClick={() => { setLean(k); setWeek('all') }}
+            className={`px-2 py-1.5 text-xs rounded border transition-colors ${
+              lean === k ? 'border-gray-500 text-gray-200 bg-gray-800'
+                         : 'border-gray-800 text-gray-600 hover:border-gray-600'}`}>
             {l}
           </button>
         ))}
