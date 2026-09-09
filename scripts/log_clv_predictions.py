@@ -39,8 +39,9 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 from config import MODELS_DIR, CURRENT_SEASON
-from score_week import (supabase, fetch_current_schedule, current_week_number,
-                        fetch_team_metrics, fetch_latest_lines, fetch_weather,
+from score_week import (supabase, fetch_all, fetch_current_schedule,
+                        current_week_number, fetch_team_metrics,
+                        fetch_latest_lines, fetch_weather,
                         fetch_injury_aggregates, build_feature_matrix,
                         assert_feature_parity)
 
