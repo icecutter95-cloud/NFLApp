@@ -44,7 +44,7 @@ warnings.filterwarnings("ignore")
 
 from config import DATA_DIR, MODELS_DIR
 from cfb_teams import cfbd_to_key
-from score_week import supabase
+from score_week import supabase, fetch_all
 from build_cfb_dataset import (FEATURE_COLS, PRESEASON_COLS, INSEASON_COLS,
                                haversine)
 
@@ -200,14 +200,30 @@ def venue_block() -> tuple:
 def main():
     dry = "--dry-run" in sys.argv
 
-    res = supabase.table("cfb_line_history").select("*").execute()
-    lines = pd.DataFrame(res.data or [])
+    lines = pd.DataFrame(fetch_all("cfb_line_history"))
     if lines.empty:
         print("No rows in cfb_line_history — run fetch_cfb_odds.py first")
         return
     lines["ct"] = pd.to_datetime(lines["commence_time"], utc=True)
     games = (lines.sort_values("recorded_at")
              .groupby(["home_team", "away_team"], as_index=False).first())
+
+    # One row per GAME, not per orientation. A neutral-site game can arrive with
+    # its home and away sides swapped partway through -- OKLAHOMA @ TEXAS did
+    # exactly that, 33 snapshots one way then one the other -- which makes two
+    # groups above sharing a single game_id, and cfb_predictions is keyed on
+    # (game_id, bet_type). The upsert then fails outright with "ON CONFLICT DO
+    # UPDATE command cannot affect row a second time". Keep the orientation the
+    # feed used most, which is the same rule cfb_open_close applies.
+    counts = (lines.groupby(["game_id", "home_team", "away_team"])
+              .size().rename("n").reset_index())
+    games = games.merge(counts, on=["game_id", "home_team", "away_team"], how="left")
+    before = len(games)
+    games = (games.sort_values("n", ascending=False)
+             .drop_duplicates("game_id", keep="first")
+             .drop(columns="n").reset_index(drop=True))
+    if before != len(games):
+        print(f"  collapsed {before - len(games)} flipped-orientation duplicate(s)")
     print(f"CFB: {len(games)} games with a line")
 
     # A quota outage with nothing cached is an external condition, not a code

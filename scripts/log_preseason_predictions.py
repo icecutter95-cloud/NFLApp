@@ -38,7 +38,7 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 from config import MODELS_DIR, CURRENT_SEASON
-from score_week import (supabase, fetch_team_metrics, fetch_weather,
+from score_week import (supabase, fetch_all, fetch_team_metrics, fetch_weather,
                         fetch_injury_aggregates, build_feature_matrix,
                         assert_feature_parity)
 
@@ -55,8 +55,7 @@ TEAM_DIV = {t: d for d, ts in DIVISIONS.items() for t in ts}
 
 def load_games(season: int) -> tuple:
     """One row per preseason game, plus the consensus line, from preseason_lines."""
-    res = supabase.table("preseason_lines").select("*").execute()
-    df = pd.DataFrame(res.data or [])
+    df = pd.DataFrame(fetch_all("preseason_lines"))
     if df.empty:
         return pd.DataFrame(), {}
 

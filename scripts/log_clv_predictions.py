@@ -236,8 +236,7 @@ def main():
         print(f"  wrote {len(rows)} predictions")
 
     # Show CLV so far for this season.
-    tr = supabase.table("clv_tracking").select("*").eq("season", season).execute()
-    df = pd.DataFrame(tr.data or [])
+    df = pd.DataFrame(fetch_all("clv_tracking", season=season))
     if not df.empty and df["clv_points"].notna().any():
         c = df["clv_points"].dropna()
         d = df["direction_correct"].dropna()

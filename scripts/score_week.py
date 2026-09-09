@@ -30,6 +30,29 @@ from config import (
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+
+def fetch_all(table, columns="*", page=1000, **filters):
+    """Every row from a table, paging past PostgREST's 1000-row cap.
+
+    A bare .select().execute() silently returns only the first 1000 rows. That
+    is not an error and nothing downstream can tell the difference, which is how
+    the CFB logger ended up predicting on 73 games while cfb_line_history held
+    11,215 rows across 148 -- roughly 9% of the data, chosen arbitrarily.
+
+    filters are applied as equality matches, e.g. fetch_all("clv_tracking",
+    season=2026).
+    """
+    out = []
+    for start in range(0, 1_000_000, page):
+        q = supabase.table(table).select(columns)
+        for k, v in filters.items():
+            q = q.eq(k, v)
+        rows = (q.range(start, start + page - 1).execute().data) or []
+        out.extend(rows)
+        if len(rows) < page:
+            break
+    return out
+
 # Calibrated edge -> win-probability curves, fit by calibrate_ev.py on real
 # honest out-of-sample outcomes (isotonic regression, monotonic in edge size).
 # Falls back to the old guessed linear formula (EDGE_PER_WIN_PCT_POINT, capped
