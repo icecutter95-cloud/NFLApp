@@ -49,11 +49,20 @@ warnings.filterwarnings("ignore")
 
 from score_week import supabase
 
+# join: how a split row finds its line history.
+#
+#   cfb  by game_id -- cfb_predictions takes its ids straight from
+#        cfb_line_history, so they are the same ids.
+#   nfl  by TEAM PAIR -- line_predictions falls back to synthetic ids
+#        ("2026_1_NE_SEA") because Odds API event ids are unstable, while
+#        line_history keeps the event id. Measured: 16 prediction ids, 272
+#        history ids, ZERO overlap. Joining on game_id here silently produced no
+#        pairs at all rather than an error.
 LEAGUES = {
     "nfl": {"splits": "nfl_public_splits", "lines": "line_history",
-            "signal": "nfl_signal"},
+            "signal": "nfl_signal", "join": "teams"},
     "cfb": {"splits": "cfb_public_splits", "lines": "cfb_line_history",
-            "signal": "cfb_signal"},
+            "signal": "cfb_signal", "join": "game_id"},
 }
 MIN_MOVE = 0.5          # half a point is the smallest tick worth scoring
 
@@ -75,29 +84,50 @@ def analyse(league, min_hours):
     if splits.empty:
         print(f"\n{league.upper()}: no captures yet")
         return None
-    lines = pull(cfg["lines"], "game_id, recorded_at, spread_home, total")
-    sig = pull(cfg["signal"], "game_id, bet_type, predicted_side")
+    lines = pull(cfg["lines"],
+                 "game_id, home_team, away_team, recorded_at, spread_home, total")
+    sig = pull(cfg["signal"],
+               "game_id, bet_type, predicted_side, home_team, away_team, "
+               "commence_time")
     if lines.empty:
         print(f"\n{league.upper()}: no line history")
         return None
 
-    splits["captured_at"] = pd.to_datetime(splits["captured_at"], utc=True)
-    lines["recorded_at"] = pd.to_datetime(lines["recorded_at"], utc=True)
-    sides = {(r.game_id, r.bet_type): r.predicted_side
-             for r in sig.itertuples()} if not sig.empty else {}
+    # ISO8601 explicitly: captures written before the timestamps were floored
+    # carry microseconds and later ones do not, so letting pandas infer a single
+    # format from the first row fails on the rest.
+    splits["captured_at"] = pd.to_datetime(splits["captured_at"],
+                                           format="ISO8601", utc=True)
+    lines["recorded_at"] = pd.to_datetime(lines["recorded_at"],
+                                          format="ISO8601", utc=True)
+    meta = {(r.game_id, r.bet_type): r for r in sig.itertuples()} if not sig.empty else {}
 
     # One line per (game, timestamp): the median across books, so a single
     # outlier book cannot masquerade as movement.
-    lines = (lines.groupby(["game_id", "recorded_at"], as_index=False)
+    key = ["home_team", "away_team"] if cfg["join"] == "teams" else ["game_id"]
+    lines = (lines.groupby(key + ["recorded_at"], as_index=False)
              .agg(spread_home=("spread_home", "median"), total=("total", "median")))
 
     rows = []
     for s in splits.itertuples():
-        side = sides.get((s.game_id, s.bet_type))
-        if not side:
+        m = meta.get((s.game_id, s.bet_type))
+        if m is None or not m.predicted_side:
             continue
+        side = m.predicted_side
         col = "spread_home" if s.bet_type == "spread" else "total"
-        g = lines[lines.game_id == s.game_id].sort_values("recorded_at")
+        if cfg["join"] == "teams":
+            # A team pair repeats across seasons, so without a date guard a
+            # 2025 snapshot could pair with a 2026 capture. Two weeks either
+            # side of kickoff is wider than any line history for one game and
+            # far narrower than a season.
+            kick = pd.to_datetime(m.commence_time, format="ISO8601", utc=True)
+            g = lines[(lines.home_team == m.home_team)
+                      & (lines.away_team == m.away_team)
+                      & (lines.recorded_at >= kick - pd.Timedelta(days=14))
+                      & (lines.recorded_at <= kick + pd.Timedelta(days=1))]
+        else:
+            g = lines[lines.game_id == s.game_id]
+        g = g.sort_values("recorded_at")
         if g.empty:
             continue
         before = g[g.recorded_at <= s.captured_at]
