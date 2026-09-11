@@ -1,0 +1,23 @@
+-- pg_cron schedules on the production project, recorded here because pg_cron
+-- state lives only in the database and is otherwise invisible to the repo.
+-- Reflects the state as of 2026-09-11. Verify with:
+--     select jobid, jobname, schedule, active from cron.job order by jobid;
+--
+-- refresh-odds is the ONLY writer of line_history, which is the source of every
+-- "current close" and every CLV figure. It ran ONCE A DAY until 2026-09-11,
+-- while the code comments claimed every 15 minutes. At that cadence the
+-- project's central timing finding (+1.55 CLV inside the first six hours) was
+-- unmeasurable, and the CLV tab showed a "current" line a day behind the books
+-- beside it. Each call costs 2 Odds API credits; hourly is ~1,400 a month
+-- against a balance in the tens of thousands.
+--
+--   job  name                        schedule        note
+--   2    refresh-public-betting      20 12 * * *     daily
+--   3    refresh-weather-wednesday   0 9 * * 3       weekly
+--   4    refresh-injuries            40 12 * * *     daily
+--   9    refresh-odds-daily          0 * * * *       HOURLY since 2026-09-11 (was 0 12 * * *)
+--   13   log-clv-daily               30 12 * * *     daily; redundant with the 3-hourly
+--                                                    GitHub log-clv workflow, harmless
+--
+-- The change that was applied:
+select cron.alter_job(9, schedule => '0 * * * *');

@@ -766,6 +766,15 @@ def main():
             print(f"  {e} — skipping. Until it is played, the model correctly "
                   f"carries prior-season strength.")
             continue
+        if df.empty:
+            # Play-by-play exists but not enough of it: one Thursday game gives
+            # every team at most a single row, and the rolling windows need
+            # more than that to emit anything. Treat it exactly like an
+            # unplayed season -- and do NOT save the empty frame, or the next
+            # run finds the file, skips the rebuild, and stays empty forever.
+            print(f"  {season}: play-by-play exists but too little to roll a "
+                  f"window yet — skipping until more games are in.")
+            continue
         df.to_parquet(out_path, index=False)
         print(f"  Saved -> {out_path}")
         all_frames.append(df)

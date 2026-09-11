@@ -24,8 +24,11 @@ on:
     # just after a daily run could be up to 24h stale before it was ever
     # visible — most of the edge, gone before anyone saw the bet.
     #
-    # refresh-odds already runs every 15 min during game week, so the logger
-    # was the bottleneck. At 3h the frozen number is at worst 3 hours behind
+    # refresh-odds (the ONLY writer of line_history) runs hourly via pg_cron,
+    # at :00, so each pass here at :30 reads a snapshot at most 30 minutes old.
+    # It was once a day until 2026-09-11 -- this comment used to claim every 15
+    # minutes, which was never true -- and at that cadence every "current close"
+    # and CLV figure was up to 24h stale. See supabase/cron_jobs.sql. At 3h the frozen number is at worst 3 hours behind
     # the true opener, comfortably inside the best bucket.
     - cron: '30 */3 * * *'
 
