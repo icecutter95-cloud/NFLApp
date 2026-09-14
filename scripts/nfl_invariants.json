@@ -1,11 +1,11 @@
 {
   "counts": {
-    "line_predictions": 32,
-    "clv_tracking": 32,
+    "line_predictions": 96,
+    "clv_tracking": 96,
     "movement_history": 1640,
     "game_results": 285,
-    "line_history": 15447,
-    "book_lines": 739,
+    "line_history": 24482,
+    "book_lines": 779,
     "best_book_lines": 272,
     "line_open_close": 272,
     "preseason_predictions": 98,
