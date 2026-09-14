@@ -418,6 +418,7 @@ export default function ClvPanel({ season }) {
   const [loading, setLoading] = useState(true)
   const [qualifyingOnly, setQualifyingOnly] = useState(false)
   const [tab, setTab] = useState('all')
+  const [weekFilter, setWeekFilter] = useState('all')
   const [sort, setSort] = useState('time')
   const [best, setBest] = useState({})        // "AWAY@HOME" -> best_book_lines row
   const [expanded, setExpanded] = useState(null)
@@ -483,9 +484,20 @@ export default function ClvPanel({ season }) {
     setLoadingQuotes(false)
   }
 
+  // Week filter sits ABOVE the market tabs so the stat tiles follow it: pick
+  // week 2 and "Mean CLV" is week 2's mean, not the season's.
+  const weeks = useMemo(() => {
+    const seen = new Map()
+    for (const r of rows) seen.set(r.week, (seen.get(r.week) || 0) + 1)
+    return [...seen.entries()].sort((a, b) => a[0] - b[0])
+  }, [rows])
+  const inWeek = useMemo(
+    () => (weekFilter === 'all' ? rows : rows.filter(r => r.week === weekFilter)),
+    [rows, weekFilter],
+  )
   const inTab = useMemo(
-    () => (tab === 'all' ? rows : rows.filter(r => r.bet_type === tab)),
-    [rows, tab],
+    () => (tab === 'all' ? inWeek : inWeek.filter(r => r.bet_type === tab)),
+    [inWeek, tab],
   )
 
   const stats = useMemo(() => {
@@ -550,7 +562,7 @@ export default function ClvPanel({ season }) {
 
       <div className="flex items-center gap-1 border-b border-gray-800">
         {TABS.map(t => {
-          const n = t.key === 'all' ? rows.length : rows.filter(r => r.bet_type === t.key).length
+          const n = t.key === 'all' ? inWeek.length : inWeek.filter(r => r.bet_type === t.key).length
           return (
             <button
               key={t.key}
@@ -565,6 +577,20 @@ export default function ClvPanel({ season }) {
             </button>
           )
         })}
+        {weeks.length > 1 && (
+          <div className="ml-auto flex items-center gap-1 pb-1">
+            <span className="text-[10px] text-gray-600 uppercase tracking-wider mr-1">Week</span>
+            {[['all', 'All'], ...weeks.map(([w, n]) => [w, `${w}`])].map(([k, label]) => (
+              <button key={String(k)} onClick={() => setWeekFilter(k)}
+                title={k === 'all' ? `${rows.length} lines` : `${weeks.find(x => x[0] === k)?.[1]} lines`}
+                className={`px-2 py-1 text-xs rounded border transition-colors ${
+                  weekFilter === k ? 'border-gray-500 text-gray-200 bg-gray-800'
+                                   : 'border-gray-800 text-gray-600 hover:border-gray-600'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">

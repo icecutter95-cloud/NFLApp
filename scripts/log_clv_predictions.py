@@ -40,7 +40,7 @@ warnings.filterwarnings("ignore")
 
 from config import MODELS_DIR, CURRENT_SEASON
 from score_week import (supabase, fetch_all, fetch_current_schedule,
-                        current_week_number, fetch_team_metrics,
+                        current_week_number, weeks_in_window, fetch_team_metrics,
                         fetch_latest_lines, fetch_weather,
                         fetch_injury_aggregates, build_feature_matrix,
                         assert_feature_parity)
@@ -63,11 +63,10 @@ SPREAD_DISAGREE_MIN = 3.0     # shadow rule only, kept for comparison
 RESIDUAL_MIN = 1.5
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    dry = "--dry-run" in sys.argv
-    season = int(args[0]) if args else CURRENT_SEASON
-    week = int(args[1]) if len(args) > 1 else current_week_number(season)
+def run_week(season: int, week: int, dry: bool) -> None:
+    """Freeze predictions for one week's games. Idempotent: games already in
+    line_predictions are skipped, so calling this for a week that is fully
+    logged writes nothing."""
 
     model_path = MODELS_DIR / "movement_model.joblib"
     if not model_path.exists():
@@ -105,7 +104,7 @@ def main():
     else:
         print("  WARNING: no margin_model.joblib — 'qualifies' cannot be computed")
 
-    print(f"CLV logging: season={season} week={week}")
+    print(f"\n--- week {week} ---")
     games = fetch_current_schedule(season, week)
     if games.empty:
         print("  no regular-season games this week")
@@ -114,6 +113,23 @@ def main():
 
     metrics = fetch_team_metrics(season, week)
     lines = fetch_latest_lines(pairs)
+
+    # Never freeze a prediction on a line that does not exist. build_feature_matrix
+    # substitutes spread 0 / total 45 for a missing line, and a row written from
+    # that would sit in line_predictions -- which is never overwritten -- as a
+    # real opener. Now that more than one week is visited per run, a week whose
+    # board is not fully posted yet is a normal state, not a rare one.
+    has_line = [(h, a) in lines and lines[(h, a)].get("spread_home") is not None
+                for h, a in pairs]
+    if not all(has_line):
+        missing = [f"{a} @ {h}" for (h, a), ok in zip(pairs, has_line) if not ok]
+        print(f"  {len(missing)} game(s) with no line yet, skipped: {', '.join(missing[:4])}"
+              + (" ..." if len(missing) > 4 else ""))
+        games = games[has_line].reset_index(drop=True)
+        pairs = list(zip(games["home_team"], games["away_team"]))
+        if games.empty:
+            print("  nothing on the board for this week yet")
+            return
     weather = fetch_weather(pairs)
     injuries = fetch_injury_aggregates()
     feats = build_feature_matrix(games, metrics, lines, weather, injuries)
@@ -235,6 +251,34 @@ def main():
     if rows:
         supabase.table("line_predictions").upsert(rows, on_conflict="game_id,bet_type").execute()
         print(f"  wrote {len(rows)} predictions")
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    dry = "--dry-run" in sys.argv
+    season = int(args[0]) if args else CURRENT_SEASON
+
+    # Every week with a game inside the window, not just the earliest unplayed
+    # one. This was documented (WEEKLY_WINDOW_DAYS) but never implemented: the
+    # logger took current_week_number(), which stays on week N until N's last
+    # game -- Monday night -- has kicked off. So week N+1's opener, posted the
+    # previous Tuesday, went unlogged for six days, and the model's timing
+    # edge lives in that opener's first six hours. Week 2 of 2026 was missed
+    # this way. An explicit week argument still runs just that week.
+    if len(args) > 1:
+        weeks = [int(args[1])]
+    else:
+        weeks = weeks_in_window(season, WEEKLY_WINDOW_DAYS)
+        if not weeks:
+            weeks = [current_week_number(season)]
+    print(f"CLV logging: season={season} weeks={weeks} "
+          f"(games within {WEEKLY_WINDOW_DAYS} days)")
+
+    for week in weeks:
+        run_week(season, week, dry)
+
+    if dry:
+        return
 
     # Show CLV so far for this season.
     df = pd.DataFrame(fetch_all("clv_tracking", season=season))

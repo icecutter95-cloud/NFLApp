@@ -617,6 +617,24 @@ def fetch_current_schedule(season: int, week: int) -> pd.DataFrame:
     return sched[(sched["week"] == week) & (sched["game_type"] == "REG")].copy()
 
 
+def weeks_in_window(season: int, days: int) -> list:
+    """Regular-season week numbers with a game kicking off in the next `days`.
+
+    Distinct from current_week_number(), which returns only the EARLIEST
+    unplayed week and therefore sits on week N until N's Monday-night game has
+    kicked off. During that stretch week N+1's opener is live and moving, and
+    is exactly what the logger is meant to freeze. This returns every week with
+    a game inside the window -- typically the current week and the next one --
+    so the logger can visit each. Empty when the season is over.
+    """
+    sched = nfl.import_schedules([season])
+    sched = sched[sched["game_type"] == "REG"] if "game_type" in sched.columns else sched
+    gd = pd.to_datetime(sched["gameday"]).dt.date
+    today = date.today()
+    window = sched[(gd >= today) & (gd <= today + timedelta(days=days))]
+    return sorted(int(w) for w in window["week"].unique())
+
+
 def current_week_number(season: int) -> int:
     sched = nfl.import_schedules([season])
     today = date.today()
