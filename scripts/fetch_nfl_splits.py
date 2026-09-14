@@ -9,8 +9,19 @@ not real so only the Consensus figure is stored.
 Team abbreviations line up with ours already, with exactly one exception found
 by diffing the two sets: Action says JAC, we say JAX. All 31 others match.
 
+Which week
+----------
+With no argument this reads the public-betting page, which shows whatever week
+Action Network considers current -- and it stays on week N until N's Monday
+night game is over. Our logger freezes week N+1 days before that, so during
+that window the page cannot supply the splits that matter. --week N asks the
+scoreboard API for that week directly.
+
 Usage:
-    python fetch_nfl_splits.py
+    python fetch_nfl_splits.py                  # the page's current week
+    python fetch_nfl_splits.py --week 2         # an explicit week
+    python fetch_nfl_splits.py --week 2 --week 3
+    python fetch_nfl_splits.py --next-weeks    # whatever the logger is freezing
     python fetch_nfl_splits.py --dry-run
 """
 
@@ -20,7 +31,8 @@ from datetime import datetime
 
 warnings.filterwarnings("ignore")
 
-from action_splits import fetch, outcomes, kickoff, CONSENSUS_BOOK
+from action_splits import fetch, fetch_week, outcomes, kickoff, CONSENSUS_BOOK
+from config import CURRENT_SEASON as SEASON
 from score_week import supabase
 
 # The only abbreviation Action Network spells differently to us.
@@ -35,9 +47,24 @@ def abbr(team):
 def main():
     dry = "--dry-run" in sys.argv
 
-    games, books, observed, age = fetch("nfl")
-    print(f"Action Network NFL: {len(games)} games, page {age}s old "
-          f"(generated ~{observed.isoformat()[:19]}Z)")
+    weeks = [int(sys.argv[i + 1]) for i, a in enumerate(sys.argv)
+             if a == "--week" and i + 1 < len(sys.argv)]
+    if "--next-weeks" in sys.argv:
+        # The same weeks the logger freezes: everything inside its window.
+        from log_clv_predictions import WEEKLY_WINDOW_DAYS
+        from score_week import weeks_in_window
+        weeks = weeks_in_window(SEASON, WEEKLY_WINDOW_DAYS) or weeks
+    if weeks:
+        games, books, observed, age = [], {}, None, 0
+        for w in weeks:
+            g, b, o, a = fetch_week("nfl", w, SEASON)
+            games += g; books.update(b); observed = observed or o; age = a
+            print(f"Action Network NFL week {w}: {len(g)} games via API "
+                  f"(~{o.isoformat()[:19]}Z)")
+    else:
+        games, books, observed, age = fetch("nfl")
+        print(f"Action Network NFL: {len(games)} games, page {age}s old "
+              f"(generated ~{observed.isoformat()[:19]}Z)")
 
     board = (supabase.table("line_predictions")
              .select("game_id, bet_type, home_team, away_team, commence_time")

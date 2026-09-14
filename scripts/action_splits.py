@@ -71,6 +71,33 @@ def fetch(league):
     return props["scoreboardResponse"]["games"], books, observed, age
 
 
+API = "https://api.actionnetwork.com/web/v2/scoreboard/{league}"
+
+
+def fetch_week(league, week, season):
+    """Same tuple as fetch(), for an EXPLICIT week via the scoreboard API.
+
+    The public-betting page shows only the week Action Network considers
+    current, and it does not flip to week N+1 until week N's Monday-night game
+    has ended. Our logger freezes week N+1 days earlier, so the page cannot
+    supply splits for the games that matter most at that moment. This is the
+    endpoint the page itself calls when you click forward a week; it answers
+    an unauthenticated request with the same game/markets/bet_info shape, so
+    outcomes() works on it unchanged. It carries no allBooks map, so the book
+    label is fixed to Consensus, which is all we store anyway.
+    """
+    r = requests.get(API.format(league=league), headers={
+        "User-Agent": UA, "Accept": "application/json"},
+        params={"week": week, "season": season, "bookIds": CONSENSUS_BOOK,
+                "period": "game"}, timeout=90)
+    r.raise_for_status()
+    data = r.json()
+    age = int(r.headers.get("age") or 0)
+    observed = (datetime.now(timezone.utc) - timedelta(seconds=age)
+                ).replace(second=0, microsecond=0)
+    return data.get("games", []), {CONSENSUS_BOOK: "Consensus"}, observed, age
+
+
 def outcomes(game, book=CONSENSUS_BOOK):
     """{'spread': {...}, 'total': {...}} of (tickets, money, line) per side."""
     mk = (game.get("markets") or {}).get(book) or {}
