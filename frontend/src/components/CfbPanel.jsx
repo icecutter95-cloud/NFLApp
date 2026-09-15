@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { AlertTriangle, Info, ChevronRight, ChevronDown, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Info, ChevronRight, ChevronDown, RefreshCw, Search, X } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { moveClass, moveTitle } from '../lib/movement'
 
@@ -100,6 +100,7 @@ export default function CfbPanel({ season }) {
   const [status, setStatus] = useState('upcoming')
   const [week, setWeek] = useState('all')
   const [lean, setLean] = useState('all')
+  const [query, setQuery] = useState('')
   const [refresh, setRefresh] = useState(null)
   const [refreshMsg, setRefreshMsg] = useState('')
 
@@ -239,9 +240,17 @@ export default function CfbPanel({ season }) {
       a[0] === 'none' ? 1 : b[0] === 'none' ? -1 : a[0] - b[0])
   }, [pool])
 
+  // Team keys are UPPER_SNAKE ("NORTH_CAROLINA"); match against a spaced,
+  // lowercased form so "north carolina", "carolina" and "unc"-style partials
+  // all hit. Every token typed has to match somewhere in either team.
   const visible = useMemo(() => {
     let s = week === 'all' ? pool
           : pool.filter(r => (r.week ?? 'none') === week)
+    const tokens = query.toLowerCase().split(/\s+/).filter(Boolean)
+    if (tokens.length) {
+      const hay = r => `${r.away_team} ${r.home_team}`.replace(/_/g, ' ').toLowerCase()
+      s = s.filter(r => { const h = hay(r); return tokens.every(t => h.includes(t)) })
+    }
     s = [...s]
     if (sort === 'disagree') {
       s.sort((a, b) => Math.abs(b.margin_disagreement ?? 0) - Math.abs(a.margin_disagreement ?? 0))
@@ -252,7 +261,7 @@ export default function CfbPanel({ season }) {
       s.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time))
     }
     return s
-  }, [pool, week, sort, status])
+  }, [pool, week, sort, status, query])
 
   if (loading) {
     return <div className="flex items-center justify-center h-48 text-gray-600 text-sm">Loading college football…</div>
@@ -358,6 +367,18 @@ export default function CfbPanel({ season }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        <label className="relative flex items-center w-full sm:w-64">
+          <Search size={12} className="absolute left-2.5 text-gray-600 pointer-events-none" />
+          <input type="search" value={query} onChange={e => setQuery(e.target.value)}
+                 placeholder="Find a team…"
+                 className="w-full pl-7 pr-7 py-1.5 text-xs bg-gray-900 border border-gray-800 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-gray-500" />
+          {query && (
+            <button onClick={() => setQuery('')} aria-label="Clear search"
+                    className="absolute right-2 text-gray-600 hover:text-gray-300">
+              <X size={12} />
+            </button>
+          )}
+        </label>
         <span className="text-xs text-gray-600">Sort</span>
         {[['disagree', 'Disagreement'], ['time', 'Kickoff']].map(([k, l]) => (
           <button key={k} onClick={() => setSort(k)}
@@ -440,9 +461,9 @@ export default function CfbPanel({ season }) {
         <div className="divide-y divide-gray-800/50">
           {visible.length === 0 && (
             <div className="px-4 py-6 text-center text-xs text-gray-600">
-              {status === 'final'
-                ? 'No games have finished yet.'
-                : 'Nothing matches this filter.'}
+              {query ? `No games match "${query}".`
+               : status === 'final' ? 'No games have finished yet.'
+               : 'Nothing matches this filter.'}
             </div>
           )}
           {visible.map(r => {
@@ -460,7 +481,51 @@ export default function CfbPanel({ season }) {
                 <div role="button" tabIndex={0}
                      onClick={() => setOpen(isOpen ? null : key)}
                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(isOpen ? null : key) } }}
-                     className={`grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center cursor-pointer hover:bg-gray-800/30`}>
+                     className="cursor-pointer hover:bg-gray-800/30">
+
+                {/* Phone layout. The desktop grid below has 730px of fixed
+                    columns, so on a 375px screen the flexible game-name column
+                    collapsed to a measured width of ZERO -- the one thing a
+                    row is for was the one thing it did not show. This stacks
+                    the essentials in two lines and leaves the numbers to the
+                    expanded view. */}
+                <div className="md:hidden px-4 py-2.5">
+                  <div className="flex items-center gap-2">
+                    {isOpen ? <ChevronDown size={12} className="text-gray-500 shrink-0" />
+                            : <ChevronRight size={12} className="text-gray-600 shrink-0" />}
+                    <span className="text-gray-100 text-sm font-medium truncate">
+                      {r.away_team} @ {r.home_team}
+                    </span>
+                    <span className="ml-auto text-gray-500 text-xs whitespace-nowrap">{fmtDate(r.commence_time)}</span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 pl-5 text-xs">
+                    <span className={side ? 'text-gray-200' : 'text-gray-600 italic'}>
+                      {sig && sig.signal && sig.signal !== 'no move yet' && (
+                        <span className={`mr-1 ${SIGNAL_TONE[sig.signal] ?? 'text-gray-500'}`}>●</span>
+                      )}
+                      {side ?? 'models split'}
+                    </span>
+                    <span className="ml-auto tabular-nums whitespace-nowrap">
+                      <span className="text-gray-600">{fmtLine(r.open_line)}</span>
+                      <span className="text-gray-700 mx-0.5">→</span>
+                      <span className="text-gray-200">{r.closing_line == null ? '—' : fmtLine(r.closing_line)}</span>
+                    </span>
+                    <span className={`tabular-nums w-10 text-right ${
+                      !r.actual_movement ? 'text-gray-700' : moveClass(r, 'text-gray-200')}`}>
+                      {r.actual_movement == null ? '—' : r.actual_movement === 0 ? '0.0' : fmtLine(r.actual_movement)}
+                    </span>
+                    {r.result && (
+                      <span className={`px-1 py-0.5 rounded text-[10px] uppercase ${
+                        r.result === 'win' ? 'bg-green-950 text-green-400'
+                        : r.result === 'loss' ? 'bg-red-950 text-red-400' : 'bg-gray-800 text-gray-400'}`}>
+                        {r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Desktop grid. */}
+                <div className={`hidden md:grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center`}>
                   <div>{isOpen ? <ChevronDown size={12} className="text-gray-500" />
                                : <ChevronRight size={12} className="text-gray-600" />}</div>
                   <div className="text-gray-100 truncate text-xs"
@@ -512,6 +577,7 @@ export default function CfbPanel({ season }) {
                       </span>
                     ) : <span className="text-gray-700">—</span>}
                   </div>
+                </div>
                 </div>
 
                 {isOpen && (
