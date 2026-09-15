@@ -348,7 +348,44 @@ export default function PreseasonPanel() {
                 <div role="button" tabIndex={0}
                      onClick={() => setOpen(isOpen ? null : key)}
                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(isOpen ? null : key) } }}
-                     className={`grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center cursor-pointer hover:bg-gray-800/30`}>
+                     className="cursor-pointer hover:bg-gray-800/30">
+
+                {/* Phone layout. The grid below has 474px of fixed columns, so
+                    on a 375px screen both the game name and the kickoff
+                    measured ZERO wide. */}
+                <div className="md:hidden px-4 py-2.5">
+                  <div className="flex items-center gap-2">
+                    {isOpen ? <ChevronDown size={12} className="text-gray-500 shrink-0" />
+                            : <ChevronRight size={12} className="text-gray-600 shrink-0" />}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+                      isTotal ? 'bg-amber-950 text-amber-500' : 'bg-gray-800 text-gray-400'}`}>
+                      {isTotal ? 'Tot' : 'Spr'}
+                    </span>
+                    <span className="text-gray-100 text-sm font-medium truncate">{r.away_team} @ {r.home_team}</span>
+                    <span className="ml-auto text-gray-500 text-xs whitespace-nowrap">{fmtDate(r.commence_time)}</span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 pl-5 text-xs">
+                    <span className="font-medium">
+                      <span className="text-gray-200">{side}</span>
+                      {why?.split && <span className="ml-1.5 text-[9px] uppercase tracking-wider text-amber-500/80">split</span>}
+                    </span>
+                    <span className="ml-auto tabular-nums whitespace-nowrap">
+                      <span className="text-gray-400">{fmt(r.open_line)}</span>
+                      <span className="text-gray-700 mx-0.5">→</span>
+                      <span className="text-gray-300">{fmt(r.projected_close)}</span>
+                    </span>
+                    {r.result && (
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase ${
+                        r.result === 'win' ? 'bg-green-950 text-green-400'
+                        : r.result === 'loss' ? 'bg-red-950 text-red-400' : 'bg-gray-800 text-gray-400'}`}>
+                        {r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Desktop grid. */}
+                <div className={`hidden md:grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center`}>
                   <div>
                     {isOpen ? <ChevronDown size={12} className="text-gray-500" />
                             : <ChevronRight size={12} className="text-gray-600" />}
@@ -386,6 +423,7 @@ export default function PreseasonPanel() {
                       </span>
                     ) : <span className="text-gray-700">—</span>}
                   </div>
+                </div>
                 </div>
 
                 {isOpen && (

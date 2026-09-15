@@ -651,7 +651,7 @@ export default function ClvPanel({ season }) {
         />
       </div>
 
-      <div className="flex items-start gap-3">
+      <div className="flex flex-wrap items-start gap-3">
         <button
           onClick={() => setQualifyingOnly(v => !v)}
           className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border shrink-0 transition-colors ${
@@ -680,11 +680,11 @@ export default function ClvPanel({ season }) {
           ))}
         </div>
 
-        <span className="text-xs text-gray-600 leading-relaxed">
-          <span className="text-gray-400">Spread</span> qualifies when the margin model disagrees with the opener
-          by 3+ pts and the movement model points the same way — 63.4% / 55.1% across the two test periods.
-          There is no minimum drift SIZE: that bar was removed after it was shown to cut good bets rather than
-          filter bad ones.{' '}
+        <span className="text-xs text-gray-600 leading-relaxed basis-full md:basis-auto md:flex-1">
+          <span className="text-gray-400">Spread</span> qualifies when the residual model puts the opener
+          1.5+ pts wrong — it predicts the market's error directly rather than the game. +3.5 sd above its
+          permutation null; clustered interval clears break-even. The old margin-disagreement rule runs
+          alongside as a shadow arm so the two can be compared on a real record.{' '}
           <span className="text-amber-500/80">Total</span> qualifies on 1.25+ pts of predicted movement alone,
           which is a weaker and less stable bar — see the warning above.
         </span>
@@ -730,7 +730,54 @@ export default function ClvPanel({ season }) {
               <div role="button" tabIndex={0}
                    onClick={() => toggle(key, r)}
                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(key, r) } }}
-                   className={`grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center cursor-pointer hover:bg-gray-800/30`}>
+                   className="cursor-pointer hover:bg-gray-800/30">
+
+              {/* Phone layout. The grid below carries 685px of fixed columns,
+                  so on a 375px screen the game-name column measured ZERO wide
+                  and the row overflowed to 833px. Two lines: what the game is
+                  and how old the pick is; then the side, the best number and
+                  where to get it, the CLV, and the result. The rest is in the
+                  expanded view. */}
+              <div className="md:hidden px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  {isOpen ? <ChevronDown size={12} className="text-gray-500 shrink-0" />
+                          : <ChevronRight size={12} className="text-gray-600 shrink-0" />}
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+                    isTotal ? 'bg-amber-950 text-amber-500' : 'bg-gray-800 text-gray-400'}`}>
+                    {isTotal ? 'Tot' : 'Spr'}
+                  </span>
+                  {r.qualifies && (
+                    <Target size={11} className={`shrink-0 ${isTotal ? 'text-amber-500' : 'text-green-500'}`} />
+                  )}
+                  <span className="text-gray-100 text-sm font-medium truncate">{r.away_team} @ {r.home_team}</span>
+                  <span className="ml-auto text-xs tabular-nums shrink-0" title={age ? `${age.label} — ${age.note}` : ''}>
+                    {age ? <span className={age.cls}>{age.text}</span> : <span className="text-gray-700">Wk {r.week}</span>}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 mt-1 pl-5 text-xs">
+                  <span className="truncate">
+                    <span className={r.qualifies
+                        ? isTotal ? 'text-amber-300 font-semibold' : 'text-green-300 font-semibold'
+                        : 'text-gray-200 font-medium'}>{side}</span>
+                    <span className="text-gray-300 ml-1 tabular-nums">{bb ? fmt(bb.line) : fmt(r.taken_line)}</span>
+                    {bb?.price != null && <span className="text-gray-500 ml-1 tabular-nums">{fmtPrice(bb.price)}</span>}
+                    {bb && <span className="text-gray-600 ml-1.5">{bookName(bb.book)}</span>}
+                  </span>
+                  <span className={`ml-auto tabular-nums font-medium shrink-0 ${
+                    pending ? 'text-gray-600' : clv > 0 ? 'text-green-400' : clv < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                    {pending ? 'CLV —' : `CLV ${clv >= 0 ? '+' : ''}${clv.toFixed(1)}`}
+                  </span>
+                  <span className="w-8 text-right font-medium shrink-0">
+                    {r.result == null ? <span className="text-gray-700">—</span>
+                      : <span className={r.result === 'win' ? 'text-green-400' : r.result === 'loss' ? 'text-red-400' : 'text-gray-400'}>
+                          {r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'P'}
+                        </span>}
+                  </span>
+                </div>
+              </div>
+
+              {/* Desktop grid. */}
+              <div className={`hidden md:grid ${GRID} gap-2 px-4 py-2.5 text-sm items-center`}>
                 <div className="flex items-center gap-1">
                   {isOpen ? <ChevronDown size={12} className="text-gray-500 shrink-0" />
                           : <ChevronRight size={12} className="text-gray-600 shrink-0" />}
@@ -809,6 +856,7 @@ export default function ClvPanel({ season }) {
                         : r.result === 'loss' ? 'text-red-400' : 'text-gray-400'
                       }>{r.result === 'win' ? 'W' : r.result === 'loss' ? 'L' : 'Push'}</span>}
                 </div>
+              </div>
               </div>
               {isOpen && (
                 <RowDetail row={r} books={best[pair]} quotes={quotes[pair]}

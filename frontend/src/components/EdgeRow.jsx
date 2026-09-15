@@ -46,9 +46,47 @@ export default function EdgeRow({ projection: p, onBetLogged }) {
     <div className={`border-b border-gray-900 ${p.conflict_flag ? 'bg-red-950/20' : ''} ${
       recommended ? '' : 'opacity-60'
     }`}>
-      {/* Main row */}
+      {/* Phone layout. The grid below has 580px of fixed columns plus five
+          flexible ones; on a 375px screen the row ran to 743px and the game
+          name got nothing. Two lines: game, type and tier; then side, edge,
+          EV and any signals. The rest lives in the expanded panel. */}
+      <div className="md:hidden px-4 py-3 cursor-pointer hover:bg-gray-900/50"
+           onClick={() => setExpanded(e => !e)}>
+        <div className="flex items-center gap-2">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${
+            p.bet_type === 'spread' ? 'bg-purple-950 text-purple-300' : 'bg-cyan-950 text-cyan-300'}`}>
+            {p.bet_type === 'spread' ? 'SPR' : 'TOT'}
+          </span>
+          <span className="text-gray-100 font-medium text-sm truncate">{p.away_team} @ {p.home_team}</span>
+          <span className="ml-auto shrink-0">
+            {recommended
+              ? <span className={`text-xs px-2 py-0.5 rounded border font-medium ${tier.className}`}>{tier.label}</span>
+              : <span className="text-xs px-2 py-0.5 rounded border border-gray-800 text-gray-600">no bet</span>}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 mt-1 text-xs">
+          <span className="text-gray-200 font-medium truncate">{sideLabel}</span>
+          <span className="text-gray-500 tabular-nums shrink-0">{formatLine(p.dk_line, p.bet_type, p.side)}</span>
+          <span className={`ml-auto tabular-nums font-medium shrink-0 ${
+            !recommended ? 'text-gray-500' : edgePositive ? 'text-green-400' : 'text-red-400'}`}>
+            edge {edgePositive ? '+' : ''}{(p.edge_points ?? 0).toFixed(1)}
+          </span>
+          <span className={`tabular-nums font-bold shrink-0 ${evPositive ? 'text-green-400' : 'text-gray-500'}`}>
+            {evPositive ? '+' : ''}{((p.ev_pct ?? 0) * 100).toFixed(1)}%
+          </span>
+          {(p.steam_flag || p.rlm_flag || p.conflict_flag) && (
+            <span className="flex gap-1 shrink-0">
+              {p.steam_flag && <Zap size={11} className="text-yellow-400" />}
+              {p.rlm_flag && <RefreshCw size={11} className="text-blue-400" />}
+              {p.conflict_flag && <AlertTriangle size={11} className="text-red-400" />}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Main row (desktop) */}
       <div
-        className="grid grid-cols-[2fr_1fr_80px_1fr_80px_80px_80px_80px_100px_1fr] gap-2 px-4 py-3 items-center cursor-pointer hover:bg-gray-900/50 transition-colors text-sm"
+        className="hidden md:grid grid-cols-[2fr_1fr_80px_1fr_80px_80px_80px_80px_100px_1fr] gap-2 px-4 py-3 items-center cursor-pointer hover:bg-gray-900/50 transition-colors text-sm"
         onClick={() => setExpanded(e => !e)}
       >
         {/* Game */}
