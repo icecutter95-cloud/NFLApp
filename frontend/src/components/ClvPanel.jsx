@@ -418,7 +418,7 @@ export default function ClvPanel({ season }) {
   const [loading, setLoading] = useState(true)
   const [qualifyingOnly, setQualifyingOnly] = useState(false)
   const [tab, setTab] = useState('all')
-  const [weekFilter, setWeekFilter] = useState('all')
+  const [weekFilter, setWeekFilter] = useState(null)
   const [sort, setSort] = useState('time')
   const [best, setBest] = useState({})        // "AWAY@HOME" -> best_book_lines row
   const [expanded, setExpanded] = useState(null)
@@ -491,9 +491,23 @@ export default function ClvPanel({ season }) {
     for (const r of rows) seen.set(r.week, (seen.get(r.week) || 0) + 1)
     return [...seen.entries()].sort((a, b) => a[0] - b[0])
   }, [rows])
+
+  // Default to the week that is actually being bet: the earliest one with a
+  // game still to kick off. Once a week's last game has started it drops out
+  // of the default automatically, so this does not need touching each Tuesday.
+  // If every logged game has kicked off, show the latest week rather than an
+  // empty list. Any click pins an explicit choice and overrides this.
+  const currentWeek = useMemo(() => {
+    const now = Date.now()
+    const live = rows.filter(r => new Date(r.commence_time).getTime() > now).map(r => r.week)
+    if (live.length) return Math.min(...live)
+    return rows.length ? Math.max(...rows.map(r => r.week)) : 'all'
+  }, [rows])
+  const effectiveWeek = weekFilter ?? currentWeek
+
   const inWeek = useMemo(
-    () => (weekFilter === 'all' ? rows : rows.filter(r => r.week === weekFilter)),
-    [rows, weekFilter],
+    () => (effectiveWeek === 'all' ? rows : rows.filter(r => r.week === effectiveWeek)),
+    [rows, effectiveWeek],
   )
   const inTab = useMemo(
     () => (tab === 'all' ? inWeek : inWeek.filter(r => r.bet_type === tab)),
@@ -505,10 +519,22 @@ export default function ClvPanel({ season }) {
     const moved = inTab.filter(r => r.direction_correct != null)
     const clv = closed.map(r => r.clv_points)
     const mean = clv.length ? clv.reduce((a, b) => a + b, 0) / clv.length : null
+    // Win-loss on graded qualifying bets, and the frozen rule's shadow arm
+    // beside it. Both arms are logged every week so that by midseason the
+    // answer to "was switching rules right" is a record, not a backtest.
+    const rec = rs => {
+      const t = { win: 0, loss: 0, push: 0 }
+      rs.forEach(r => { if (r.result) t[r.result] = (t[r.result] || 0) + 1 })
+      const n = t.win + t.loss
+      return { ...t, n, text: n ? `${t.win}-${t.loss}${t.push ? `-${t.push}` : ''}` : null,
+               pct: n ? t.win / n * 100 : null }
+    }
     return {
       qualifying: inTab.filter(r => r.qualifies).length,
       qualSpread: inTab.filter(r => r.qualifies && r.bet_type === 'spread').length,
       qualTotal: inTab.filter(r => r.qualifies && r.bet_type === 'total').length,
+      qualRec: rec(inTab.filter(r => r.qualifies)),
+      shadowRec: rec(inTab.filter(r => r.shadow_qualifies)),
       tracked: inTab.length,
       resolved: closed.length,
       meanClv: mean,
@@ -584,7 +610,7 @@ export default function ClvPanel({ season }) {
               <button key={String(k)} onClick={() => setWeekFilter(k)}
                 title={k === 'all' ? `${rows.length} lines` : `${weeks.find(x => x[0] === k)?.[1]} lines`}
                 className={`px-2 py-1 text-xs rounded border transition-colors ${
-                  weekFilter === k ? 'border-gray-500 text-gray-200 bg-gray-800'
+                  effectiveWeek === k ? 'border-gray-500 text-gray-200 bg-gray-800'
                                    : 'border-gray-800 text-gray-600 hover:border-gray-600'}`}>
                 {label}
               </button>
@@ -613,10 +639,15 @@ export default function ClvPanel({ season }) {
           color={stats.dirAcc == null ? undefined : stats.dirAcc > 50 ? 'text-green-400' : 'text-red-400'}
         />
         <Stat
-          label="Qualifying"
-          value={stats.qualifying}
-          sub={tab === 'all' ? `${stats.qualSpread} spread · ${stats.qualTotal} total` : 'meets the bar'}
-          color="text-green-400"
+          label={stats.qualRec.text ? 'Qualifying record' : 'Qualifying'}
+          value={stats.qualRec.text ?? stats.qualifying}
+          sub={stats.qualRec.text
+            ? `${stats.qualRec.pct.toFixed(0)}% of ${stats.qualifying}`
+              + (stats.shadowRec.text ? ` · old rule ${stats.shadowRec.text}` : '')
+            : tab === 'all' ? `${stats.qualSpread} spread · ${stats.qualTotal} total` : 'meets the bar'}
+          color={stats.qualRec.text
+            ? (stats.qualRec.pct > 52.38 ? 'text-green-400' : 'text-red-400')
+            : 'text-green-400'}
         />
       </div>
 
