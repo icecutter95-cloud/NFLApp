@@ -23,8 +23,20 @@
 --
 -- Canonical orientation is the one a game was seen in most often, ties broken by
 -- earliest sighting; snapshots recorded the other way round have spread_home
--- negated. game_id is safe as the key -- zero matchups on this board carry more
--- than one id, which is NOT true of the NFL feed.
+-- negated.
+--
+-- game_id was called "safe as the key" here on 2026-08-20 because zero
+-- matchups carried more than one id. That held until 2026-09-13, when
+-- HOUSTON @ TEXAS_TECH moved from Saturday to Friday and the Odds API
+-- re-issued it under a new event id. The prediction stayed keyed to the first
+-- id, whose history stopped that day at -10, while the real number kept moving
+-- under the second id (-7.5 by kickoff) that nothing joined to; the tab also
+-- kept showing the old Saturday kickoff. Migration
+-- cfb_open_close_follow_reissued_event_ids (2026-09-18) folds every id for the
+-- same team pair with kickoffs within 4 days into the first-seen id, which is
+-- the one the logger keys on, and cfb_tracking now reports the kickoff from the
+-- latest snapshot rather than the frozen prediction. Rematches (title games,
+-- bowls) are months apart and stay separate.
 
 create table if not exists public.cfb_api_cache (
   cache_key   text primary key,
