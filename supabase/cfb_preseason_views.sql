@@ -37,6 +37,17 @@
 -- the one the logger keys on, and cfb_tracking now reports the kickoff from the
 -- latest snapshot rather than the frozen prediction. Rematches (title games,
 -- bowls) are months apart and stay separate.
+--
+-- Found the same day while analysing the first three weeks: the hourly odds
+-- refresh does not stop at kickoff, so a LIVE line recorded during the game
+-- was landing as the "close" -- 98 of 150 graded games had one (MICHIGAN -34.5
+-- at kickoff, -15.5 "closing" ninety minutes in). Every CLV and direction
+-- figure on the college tab was contaminated, and the first pass of the
+-- analysis reported a 71% "follow the move" edge that was nothing but the
+-- scoreboard leaking into the closer. Migration
+-- cfb_open_close_close_is_pre_kickoff (2026-09-20) takes the close from the
+-- last PRE-kickoff snapshot, as line_open_close already did for the NFL.
+-- scripts/cfb_signal_check.py is the analysis, rerunnable as the sample grows.
 
 create table if not exists public.cfb_api_cache (
   cache_key   text primary key,
