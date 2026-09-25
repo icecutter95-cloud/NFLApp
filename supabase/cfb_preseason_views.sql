@@ -83,3 +83,35 @@ create table if not exists public.preseason_results (
 -- us), sharp agreement (money share exceeds ticket share by 10+), public side
 -- (popular and already moved), public trap (popular and moved away), against
 -- the money.
+
+
+-- 7. cfb_prediction_log  -- append-only audit trail, applied 2026-09-25.
+--
+-- cfb_predictions upserts on (game_id, bet_type) and re-stamps predicted_at on
+-- every run, so it holds only the CURRENT prediction: all 264 rows carry one
+-- timestamp and the table cannot evidence what was on screen before a kickoff.
+-- The values are reproducible -- snapshotting the table, re-running the logger
+-- and diffing every field returned bit-identical rows, because every input is
+-- the first snapshot of append-only line history, a prior-season team rating,
+-- or a model file frozen 2026-08-06 before any 2026 game -- but that is a
+-- property of today's code, demonstrable only by re-running it. A retrain or a
+-- rule change would silently restate the whole season with nothing recording
+-- that it happened.
+--
+-- The log closes that gap. One row per prediction per CHANGE (the 3-hourly cron
+-- would otherwise append ~1,600 identical rows a day), carrying the prediction,
+-- the live pre-kickoff line, the latest consensus splits, the sha256 of the
+-- model files loaded and the git sha of the code. Rows are never updated or
+-- deleted. scripts/check_cfb_prediction_log.py reads it and fails if any
+-- prediction changed after its kickoff.
+--
+-- Two things worth knowing about the seed:
+--   * Rows for games already played are labelled "backfill after kickoff", not
+--     "first observation". They show the numbers are reproducible; they are not
+--     evidence of a call made in time. 153 of the first 264 are backfill.
+--   * line_now takes the last PRE-kickoff snapshot for the same reason
+--     cfb_open_close does (see above). Taken naively it read TULSA +13.5 at the
+--     open against -13.5 "now" -- a live line from 90 minutes into the game.
+--
+-- log_clv_predictions has the same upsert-and-restamp shape and is deliberately
+-- left alone; the NFL half of the app is not touched by this.

@@ -25,12 +25,20 @@ Two honest compromises:
     it moves slowly, but it is a substitution and worth knowing about.
   * rest_days defaults to 7 in week 1 because there is no previous game.
 
+Every run also appends to cfb_prediction_log, which is append-only. This table
+upserts on (game_id, bet_type) and re-stamps predicted_at, so it holds only the
+CURRENT prediction and cannot evidence what was on screen before a kickoff --
+see the migration cfb_prediction_log_append_only for why that matters and what
+the log records instead.
+
 Usage:
     python log_cfb_predictions.py
     python log_cfb_predictions.py --dry-run
 """
 
+import hashlib
 import os
+import subprocess
 import sys
 import warnings
 
@@ -195,6 +203,153 @@ def venue_block() -> tuple:
     g["home_team"] = g.home_raw.map(cfbd_to_key)
     g["away_team"] = g.away_raw.map(cfbd_to_key)
     return g.dropna(subset=["home_team", "away_team"]), v
+
+
+def model_hash() -> str:
+    """Digest of the model files actually loaded, so a retrain is visible.
+
+    A prediction is only reproducible against the weights that produced it.
+    cfb_predictions cannot show that those weights changed; a hash in the
+    append-only log can.
+    """
+    h = hashlib.sha256()
+    for name in sorted(("cfb_movement", "cfb_margin", "cfb_total_residual")):
+        f = MODELS_DIR / f"{name}_model.joblib"
+        if f.exists():
+            h.update(f.read_bytes())
+    return h.hexdigest()[:16]
+
+
+def code_version() -> str:
+    """Short git sha, or 'dirty' when the tree has uncommitted changes."""
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=10,
+                             cwd=str(DATA_DIR.parent)).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "scripts"],
+                               capture_output=True, text=True, timeout=10,
+                               cwd=str(DATA_DIR.parent)).stdout.strip()
+        return f"{sha}-dirty" if dirty else sha
+    except Exception:
+        return "unknown"
+
+
+# Fields that make one logged observation different from another. A run that
+# changes none of them writes nothing: the 3-hourly cron would otherwise append
+# ~1,600 identical rows a day and bury the changes that matter.
+LOG_KEYS = ("open_line", "predicted_movement", "projected_value",
+            "margin_disagreement", "predicted_side", "line_now")
+
+
+def _num(v):
+    """Plain Python float, or None. numpy scalars are not JSON serialisable."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(f) else f
+
+
+def write_prediction_log(rows, model_h, code_v):
+    """Append what the model said, plus the live line and splits beside it.
+
+    Returns the number of rows written. Never updates or deletes -- the point of
+    the table is that history here cannot be restated.
+    """
+    if not rows:
+        return 0
+    now = pd.Timestamp.now(tz="UTC")
+
+    # The live line, and the most recent splits capture, per game.
+    hist = pd.DataFrame(fetch_all("cfb_line_history"))
+    live = {}
+    if not hist.empty:
+        hist = hist.sort_values("recorded_at")
+        # The odds refresh does not stop at kickoff, so the newest snapshot for a
+        # played game is a LIVE number -- TULSA opened +13.5 and the last row
+        # says -13.5, recorded 90 minutes into the game. Take the last snapshot
+        # before kickoff, the same rule cfb_open_close uses for its close.
+        kick = pd.to_datetime(hist["commence_time"], utc=True, errors="coerce")
+        rec_at = pd.to_datetime(hist["recorded_at"], utc=True, errors="coerce")
+        hist = hist.assign(_pre=(rec_at < kick) | kick.isna())
+        for gid, g in hist.groupby("game_id"):
+            pre = g[g._pre]
+            last = (pre if len(pre) else g).iloc[-1]
+            # spread_home is signed relative to whichever side the feed called
+            # home in THAT snapshot, and neutral-site games flip mid-week. Store
+            # the orientation so it can be matched to the prediction's.
+            live[gid] = (last.get("spread_home"), last.get("total"),
+                         last.get("recorded_at"), last.get("home_team"))
+    splits = {}
+    sp = pd.DataFrame(fetch_all("cfb_public_splits"))
+    if not sp.empty:
+        sp = sp.sort_values("captured_at")
+        for (gid, bt), g in sp.groupby(["game_id", "bet_type"]):
+            splits[(gid, bt)] = g.iloc[-1]
+
+    # The latest logged row per game, to log changes only.
+    prev = {}
+    for r in fetch_all("cfb_prediction_log"):
+        k = (r["game_id"], r["bet_type"])
+        if k not in prev or r["logged_at"] > prev[k]["logged_at"]:
+            prev[k] = r
+
+    out = []
+    for r in rows:
+        gid, bt = r["game_id"], r["bet_type"]
+        sh, tot, at, live_home = live.get(gid, (None, None, None, None))
+        if sh is not None and live_home and live_home != r["home_team"]:
+            sh = -float(sh)          # feed flipped home/away since the opener
+        line_now = sh if bt == "spread" else tot
+        s = splits.get((gid, bt))
+        kick = pd.to_datetime(r["commence_time"], utc=True, errors="coerce")
+        rec = {
+            "game_id": gid, "bet_type": bt,
+            "season": None if r["season"] is None else int(r["season"]),
+            "week": None if r["week"] is None else int(r["week"]),
+            "home_team": r["home_team"],
+            "away_team": r["away_team"], "commence_time": r["commence_time"],
+            "hours_to_kickoff": (None if pd.isna(kick) else
+                                 round((kick - now).total_seconds() / 3600, 2)),
+            "open_line": _num(r["open_line"]),
+            "predicted_movement": _num(r["predicted_movement"]),
+            "projected_value": _num(r["projected_value"]),
+            "margin_disagreement": _num(r["margin_disagreement"]),
+            "predicted_side": r["predicted_side"],
+            "taken_line": _num(r["taken_line"]),
+            "line_now": _num(line_now),
+            "line_now_at": at,
+            "splits_captured_at": None if s is None else s["captured_at"],
+            "home_bets_pct": None if s is None else _num(s["home_bets_pct"]),
+            "away_bets_pct": None if s is None else _num(s["away_bets_pct"]),
+            "home_money_pct": None if s is None else _num(s["home_money_pct"]),
+            "away_money_pct": None if s is None else _num(s["away_money_pct"]),
+            "model_hash": model_h, "code_version": code_v,
+        }
+        p = prev.get((gid, bt))
+        if p is not None:
+            same = all((p.get(k) is None and rec[k] is None) or
+                       (p.get(k) is not None and rec[k] is not None and
+                        abs(float(p[k]) - float(rec[k])) < 1e-6)
+                       if k != "predicted_side" else p.get(k) == rec[k]
+                       for k in LOG_KEYS)
+            if same and p.get("model_hash") == model_h:
+                continue
+            rec["note"] = "changed"
+        elif (rec["hours_to_kickoff"] or 0) < 0:
+            # An entry created after the game started proves only that the
+            # prediction is reproducible, NOT that it was on screen in time.
+            # Say so in the row rather than letting it read as a live pick.
+            rec["note"] = "backfill after kickoff"
+        else:
+            rec["note"] = "first observation"
+        out.append(rec)
+
+    for i in range(0, len(out), 500):
+        supabase.table("cfb_prediction_log").insert(out[i:i + 500]).execute()
+    return len(out)
 
 
 def main():
@@ -406,6 +561,11 @@ def main():
         supabase.table("cfb_predictions").upsert(
             rows, on_conflict="game_id,bet_type").execute()
         print(f"  wrote {len(rows)} CFB predictions (nothing flagged as qualifying)")
+        # The upsert above overwrote the previous state. This does not.
+        mh, cv = model_hash(), code_version()
+        n = write_prediction_log(rows, mh, cv)
+        print(f"  prediction log: +{n} row(s) (models {mh}, code {cv})"
+              if n else f"  prediction log: no change (models {mh})")
 
 
 if __name__ == "__main__":
