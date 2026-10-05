@@ -1,0 +1,69 @@
+name: Capture TD Props
+
+# Phase 0 of the touchdown-scorer work: capture prices, grade from play-by-play,
+# model nothing. Unlike the Action Network splits jobs, this one genuinely works
+# in CI — the Odds API serves datacenter IPs happily.
+#
+# Writes only to nfl_td_props and nfl_td_results. It touches no table the
+# spread/total pipeline reads, and no existing script.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Only games kicking off within N days'
+        required: false
+        default: '8'
+  schedule:
+    # Every 2 hours. Prop prices move far more than spreads and move late on
+    # injury news, so a daily pass would miss most of what this table exists to
+    # record. Cost is 1 credit per market per game: both markets across a
+    # 16-game slate is 32 credits, so 12 passes a day is ~2,700/week against
+    # the ~51,000 remaining. Offset to :15 so it does not collide with the
+    # hourly refresh-odds pg_cron job at :00.
+    - cron: '15 */2 * * *'
+    # Grading runs once a day, not every pass: in CI there is no cached parquet
+    # (data/ is gitignored), so grade_td_props pulls a full season of
+    # play-by-play — fine daily, wasteful twelve times a day.
+    - cron: '45 13 * * 2'
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dependencies
+        # requests and python-dotenv are appended rather than added to
+        # requirements-ci.txt, whose hash is the pip cache key for every
+        # workflow in this repo.
+        run: pip install -r requirements-ci.txt requests python-dotenv
+
+      - name: Capture touchdown prices
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python scripts/fetch_td_props.py --days ${{ github.event.inputs.days || '8' }}
+
+      - name: Grade finished games
+        # Only on the daily cron, or when dispatched by hand. Best effort: a
+        # grading failure must not lose the capture that already succeeded.
+        if: github.event.schedule == '45 13 * * 2' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/grade_td_props.py --report

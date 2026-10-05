@@ -115,3 +115,13 @@ create table if not exists public.preseason_results (
 --
 -- log_clv_predictions has the same upsert-and-restamp shape and is deliberately
 -- left alone; the NFL half of the app is not touched by this.
+
+
+-- ---------------------------------------------------------------------------
+-- Touchdown-scorer markets (NFL), phase 0, applied 2026-10-05. See migration
+-- nfl_td_props_capture for the full rationale. Capture only: nfl_td_props
+-- (append-only prices from every book that quotes them) and nfl_td_results
+-- (ground truth from the cached play-by-play). No model, no screen, and no
+-- change to any existing NFL object -- check_nfl_invariants.py still passes
+-- unchanged. scripts/fetch_td_props.py captures, scripts/grade_td_props.py
+-- grades and reports.
