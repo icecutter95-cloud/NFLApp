@@ -594,17 +594,64 @@ def fetch_injury_aggregates() -> dict:
     return agg
 
 
-def fetch_public_betting(game_ids: list) -> dict:
-    """Most recent public betting entry per game."""
-    resp = (supabase.table("public_betting")
-            .select("*")
-            .in_("game_id", game_ids)
-            .order("recorded_at", desc=True)
-            .execute())
+def fetch_public_betting(team_pairs: list) -> dict:
+    """Latest public split per game, keyed by (home_team, away_team).
+
+    Reads nfl_public_splits, not the public_betting table this used to read.
+    That table is empty and always was: its only writer called Action
+    Network's web/v1/games endpoint, which has been retired and answers 404.
+    So detect_rlm() returned {"flag": False} for every game since the app was
+    built, and every tier rule requiring an RLM flag was unreachable. See
+    supabase/cron_jobs.sql for the job's removal.
+
+    Keyed on the team pair rather than game_id on purpose: projections use the
+    nfl_data_py id (2026_01_NO_DET) while the splits carry the logger's
+    synthetic one (2026_1_NO_DET), so an id join silently matches nothing on
+    the zero-padded week. clv_tracking joins this way for the same class of
+    reason.
+
+    DISPLAY ONLY. The flag derived from this is stored on the projection and
+    drives the badge and the RLM-only filter; it is deliberately NOT passed to
+    assign_confidence_tier() -- see the call sites. Decided 2026-10-07: worth
+    seeing, but on the 14 graded games where it fired the model was on the
+    sharp side in 7 and went 8-6, which is no basis for moving a tier.
+    """
+    board = (supabase.table("line_predictions")
+             .select("game_id, home_team, away_team, commence_time")
+             .execute().data or [])
+    pair_of = {b["game_id"]: (b["home_team"], b["away_team"]) for b in board}
+    kick_of = {b["game_id"]: b["commence_time"] for b in board}
+
+    # Last capture BEFORE kickoff. The collector keeps running during and after
+    # a game, so taking the newest row showed a Week 1 game a split captured on
+    # Sep 14 -- six days after it finished. Same defect as a live in-game line
+    # stored as the close, which this project has now shipped twice.
+    latest = {}
+    for r in sorted(fetch_all("nfl_public_splits"), key=lambda x: x["captured_at"]):
+        kick = kick_of.get(r["game_id"])
+        if kick and r["captured_at"] >= kick:
+            continue
+        latest.setdefault(r["game_id"], {})[r["bet_type"]] = r
+    want = set(team_pairs)
     pub: dict = {}
-    for row in resp.data:
-        if row["game_id"] not in pub:
-            pub[row["game_id"]] = row
+    for gid, by_market in latest.items():
+        pair = pair_of.get(gid)
+        if pair is None or (want and pair not in want):
+            continue
+        # The parser stores the over as the "home" column of a total row.
+        sp, tot = by_market.get("spread"), by_market.get("total")
+        d = {"source": "action_network:15"}
+        if sp:
+            d.update(bet_pct_home=sp["home_bets_pct"],
+                     money_pct_home=sp["home_money_pct"],
+                     captured_at=sp["captured_at"])
+        if tot:
+            d.update(bet_pct_over=tot["home_bets_pct"],
+                     money_pct_over=tot["home_money_pct"])
+            d.setdefault("captured_at", tot["captured_at"])
+        if len(d) > 1:
+            pub[pair] = d
+    print(f"  Public splits: {len(pub)} games (display signal only)")
     return pub
 
 
@@ -790,7 +837,7 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         game_id = row["game_id"]
         team_pair = (row["home_team"], row["away_team"])
         lh = lh_by_game.get(team_pair, [])
-        pub = pub_by_game.get(game_id, {})
+        pub = pub_by_game.get(team_pair, {})
         opening = opening_by_game.get(team_pair, {})
 
         # --- Spread market signals ---
@@ -814,9 +861,14 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         spread_rlm_same_side = rlm["flag"] and (
             (rlm.get("sharp_side") == "home") == spread_pick_home)
 
+        # RLM is a DISPLAY signal and nothing more, by decision on 2026-10-07.
+        # Passed as False here rather than left to depend on an empty source
+        # table: that is the difference between an invariant stated in code and
+        # one that holds by accident. rlm["flag"] is still stored on the
+        # projection and still drives the badge and the RLM-only filter.
         spread_tier = assign_confidence_tier(
-            abs(spread_edge), spread_steam["flag"], rlm["flag"],
-            steam_same_side=spread_steam_same_side, rlm_same_side=spread_rlm_same_side
+            abs(spread_edge), spread_steam["flag"], False,
+            steam_same_side=spread_steam_same_side, rlm_same_side=False
         )
         conflict = _pick_conflicts_with_movement(spread_pick_home, spread_line_movement, "spread")
 
@@ -887,9 +939,10 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         total_rlm_same_side = total_rlm["flag"] and (
             (total_rlm.get("sharp_side") == "over") == total_pick_over)
 
+        # Display only; see the spread call above.
         total_tier = assign_confidence_tier(
-            abs(total_edge), total_steam["flag"], total_rlm["flag"],
-            steam_same_side=total_steam_same_side, rlm_same_side=total_rlm_same_side
+            abs(total_edge), total_steam["flag"], False,
+            steam_same_side=total_steam_same_side, rlm_same_side=False
         )
         total_conflict = _pick_conflicts_with_movement(total_pick_over, total_line_movement, "total")
 
@@ -962,7 +1015,7 @@ def run_weekly_scoring(season: int, week: int):
     lh_by_game = fetch_line_history(team_pairs)
     opening = fetch_opening_lines(team_pairs)
     weather = fetch_weather(team_pairs)
-    pub = fetch_public_betting(game_ids)
+    pub = fetch_public_betting(team_pairs)
 
     # Build feature matrix
     injuries = fetch_injury_aggregates()

@@ -17,14 +17,34 @@ export default function GameDetailPanel({ projection: p, onBetLogged }) {
     // line_history.game_id is The Odds API's own opaque event ID, not the
     // nfl_data_py game_id used everywhere else — join on the team pair instead
     // (refresh-odds stores home_team/away_team specifically for this).
-    const [lh, pb, wx] = await Promise.all([
+    // Public splits live in nfl_public_splits, keyed on the LOGGER's synthetic
+    // game_id (2026_1_NO_DET) while a projection carries the nfl_data_py one
+    // (2026_01_NO_DET). The zero-padded week means querying by p.game_id
+    // matches nothing, which is half of why the old public_betting block was
+    // always blank -- the other half being that its writer called an endpoint
+    // Action Network retired. Resolve the id through the board, then read the
+    // split for THIS market.
+    const [lh, board, wx] = await Promise.all([
       supabase.from('line_history').select('*').eq('home_team', p.home_team).eq('away_team', p.away_team).order('recorded_at'),
-      supabase.from('public_betting').select('*').eq('game_id', p.game_id).order('recorded_at', { ascending: false }).limit(1),
+      supabase.from('line_predictions').select('game_id, commence_time').eq('home_team', p.home_team).eq('away_team', p.away_team).limit(1),
       supabase.from('weather').select('*').eq('game_id', p.game_id).single(),
     ])
     setLineHistory(lh.data ?? [])
-    setPublicBetting(pb.data?.[0] ?? null)
     setWeather(wx.data ?? null)
+    const gid = board.data?.[0]?.game_id
+    const kick = board.data?.[0]?.commence_time
+    if (gid) {
+      // Last capture BEFORE kickoff. The collector keeps running through the
+      // game, so the newest row for a finished game is a post-game snapshot --
+      // a Week 1 game was showing a split captured six days after it ended.
+      let q = supabase.from('nfl_public_splits').select('*')
+        .eq('game_id', gid).eq('bet_type', p.bet_type)
+      if (kick) q = q.lt('captured_at', kick)
+      const { data } = await q.order('captured_at', { ascending: false }).limit(1)
+      setPublicBetting(data?.[0] ?? null)
+    } else {
+      setPublicBetting(null)
+    }
   }
 
   const chartData = lineHistory.map(h => ({
@@ -106,25 +126,49 @@ export default function GameDetailPanel({ projection: p, onBetLogged }) {
         )}
 
         {/* Public betting */}
-        {publicBetting && (
-          <div className="space-y-1 pt-2 border-t border-gray-800">
-            <h4 className="text-xs text-gray-500 uppercase tracking-wider">Public Betting</h4>
-            <div className="flex justify-between text-xs">
-              <span className="text-gray-500">Bets on {p.home_team}</span>
-              <span className="text-gray-300">{publicBetting.bet_pct_home?.toFixed(0)}%</span>
+        {publicBetting && (() => {
+          // The parser stores the OVER as the home column of a total row, so
+          // the label has to follow the market or a 73% over reads as 73% on
+          // the home team.
+          const label = p.bet_type === 'total' ? 'Over' : p.home_team
+          const bets = publicBetting.home_bets_pct
+          const money = publicBetting.home_money_pct
+          const gap = bets != null && money != null ? money - bets : null
+          return (
+            <div className="space-y-1 pt-2 border-t border-gray-800">
+              <h4 className="text-xs text-gray-500 uppercase tracking-wider">Public Betting</h4>
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-500">Tickets on {label}</span>
+                <span className="text-gray-300">{bets?.toFixed(0)}%</span>
+              </div>
+              <div className="w-full bg-gray-800 rounded-full h-1.5">
+                <div className="bg-green-500 h-1.5 rounded-full"
+                     style={{ width: `${bets ?? 50}%` }} />
+              </div>
+              <div className="flex justify-between text-xs text-gray-600">
+                <span>Money: {money?.toFixed(0)}%</span>
+                {gap != null && Math.abs(gap) >= 10 && (
+                  <span className={gap > 0 ? 'text-blue-400' : 'text-orange-400'}>
+                    {gap > 0 ? '+' : ''}{gap.toFixed(0)} handle gap
+                  </span>
+                )}
+              </div>
+              {p.rlm_flag && (
+                <div className="text-xs text-blue-400 pt-0.5">
+                  Reverse line movement — money pushing back toward{' '}
+                  {p.rlm_sharp_side === 'home' ? p.home_team
+                    : p.rlm_sharp_side === 'away' ? p.away_team
+                    : p.rlm_sharp_side}
+                </div>
+              )}
+              <div className="text-xs text-gray-700">
+                {publicBetting.source} · {new Date(publicBetting.captured_at)
+                  .toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric' })}
+                {' '}· display only, does not affect the tier
+              </div>
             </div>
-            <div className="w-full bg-gray-800 rounded-full h-1.5">
-              <div
-                className="bg-green-500 h-1.5 rounded-full"
-                style={{ width: `${publicBetting.bet_pct_home ?? 50}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-xs text-gray-600">
-              <span>Money: {publicBetting.money_pct_home?.toFixed(0)}%</span>
-              <span className="text-gray-700">{publicBetting.source}</span>
-            </div>
-          </div>
-        )}
+          )
+        })()}
       </div>
 
       {/* Column 3 — Weather + bet log */}
