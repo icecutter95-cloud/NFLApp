@@ -12,7 +12,7 @@
 -- against a balance in the tens of thousands.
 --
 --   job  name                        schedule        note
---   2    refresh-public-betting      20 12 * * *     daily
+--   2    refresh-public-betting      REMOVED 2026-10-07  -- see note below
 --   3    refresh-weather-wednesday   0 9 * * 3       weekly
 --   4    refresh-injuries            40 12 * * *     daily
 --   9    refresh-odds-daily          0 * * * *       HOURLY since 2026-09-11 (was 0 12 * * *)
@@ -21,3 +21,25 @@
 --
 -- The change that was applied:
 select cron.alter_job(9, schedule => '0 * * * *');
+
+
+-- refresh-public-betting (job 2), removed 2026-10-07
+-- ---------------------------------------------------
+-- Ran 904 times, every one reported "succeeded", and wrote zero rows. It
+-- called api.actionnetwork.com/web/v1/games, which Action Network has retired:
+-- the endpoint answers 404 and the function returns 500. pg_cron called it a
+-- success because net.http_post completed -- the job's status says the request
+-- was made, never that the response was useful, which is worth remembering
+-- before trusting any "succeeded" in cron.job_run_details.
+--
+--   select cron.unschedule(2);
+--
+-- The public_betting table it fed is KEPT, empty, because two things read it:
+-- score_week.fetch_public_betting() -> detect_rlm() -> assign_confidence_tier(),
+-- and the frontend's GameDetailPanel. With the table empty, detect_rlm has
+-- always returned {"flag": False}, so every tier rule that requires an RLM
+-- flag has been unreachable since the app was built. That is a dormant
+-- feature, not a broken one, and switching it on is an NFL behaviour change:
+-- fed from nfl_public_splits it would flag 15 of 80 games this season, with
+-- the model already on the sharp side in 7 of the 14 graded ones (8-6). Not
+-- done, deliberately, and not to be done without asking.
