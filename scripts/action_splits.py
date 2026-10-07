@@ -10,9 +10,22 @@ unauthenticated request -- no login, no browser, no challenge.
 
 Two constraints, both measured rather than assumed (2026-09-06):
 
-  * NOT runnable on GitHub Actions. A residential connection returns every
-    game; a runner returns a page with no __NEXT_DATA__ at all. Run it from a
-    home machine.
+  * The PAGE is not runnable on GitHub Actions. A residential connection
+    returns every game; a runner returns a page with no __NEXT_DATA__ at all.
+
+    This warning used to say "NOT runnable on GitHub Actions" without
+    qualifying which path, and the entire splits pipeline was moved to a
+    Windows scheduled task on that basis. The qualifier matters: measured again
+    on 2026-10-07 from a GitHub runner, the PAGE still fails while the
+    scoreboard API returns 30 NFL and 116 college markets with real
+    percentages -- identical values to the same request from a home connection
+    (TB@DAL spread 35/65, money 42/58 from both). It also answers Supabase's
+    egress, where the page works too. So the block is specific to the web page
+    and to GitHub's ranges; fetch_week() and fetch_current() run anywhere.
+
+    Prefer the API functions for anything automated. fetch() is kept because
+    it is the only path that needs no week number, and because it still works
+    from a home machine.
 
   * The per-book breakout is not real. College: 194 game-markets where all eight
     book ids carry IDENTICAL percentages against 4 that differ, most of those
@@ -96,6 +109,35 @@ def fetch_week(league, week, season):
     observed = (datetime.now(timezone.utc) - timedelta(seconds=age)
                 ).replace(second=0, microsecond=0)
     return data.get("games", []), {CONSENSUS_BOOK: "Consensus"}, observed, age
+
+
+def fetch_current(league, season=None):
+    """(games, books, observed_at, cdn_age, week) for the CURRENT week.
+
+    The same endpoint as fetch_week() with no week parameter, which answers
+    with whatever week Action Network considers live and stamps each game with
+    its own week number -- so the caller learns the week instead of having to
+    know it. That removes the one thing the page was still needed for: college
+    has no equivalent of the NFL logger's week window to borrow a number from,
+    and asking CFBD for it would spend a call against a monthly quota.
+
+    Returns the week as a fifth element; everything else matches fetch().
+    """
+    params = {"bookIds": CONSENSUS_BOOK, "period": "game"}
+    if season:
+        params["season"] = season
+    r = requests.get(API.format(league=league), headers={
+        "User-Agent": UA, "Accept": "application/json"},
+        params=params, timeout=90)
+    r.raise_for_status()
+    data = r.json()
+    games = data.get("games", [])
+    age = int(r.headers.get("age") or 0)
+    observed = (datetime.now(timezone.utc) - timedelta(seconds=age)
+                ).replace(second=0, microsecond=0)
+    weeks = {g.get("week") for g in games if g.get("week") is not None}
+    week = min(weeks) if weeks else None
+    return games, {CONSENSUS_BOOK: "Consensus"}, observed, age, week
 
 
 def outcomes(game, book=CONSENSUS_BOOK):

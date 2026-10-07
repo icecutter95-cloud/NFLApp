@@ -44,20 +44,19 @@ response time to recover roughly when the numbers were generated. captured_at is
 the OBSERVATION time, which is what pairs a capture with the line snapshot that
 was live beside it.
 
-Where this can run
-------------------
-NOT on GitHub Actions. Verified 2026-09-06 by running both within minutes of
-each other: a residential connection gets all 99 games, a runner gets a page
-with no __NEXT_DATA__ at all. Action Network evidently serves datacenter IPs
-something else. The workflow keeps the step as continue-on-error so the board
-and the grading are unaffected; in practice it will always skip there.
+Where this runs
+---------------
+In CI, since 2026-10-07. This used to read the public-betting PAGE, which
+returns no __NEXT_DATA__ to a GitHub runner, so collection ran from a Windows
+scheduled task on a home machine. Re-measured from a runner that day: the page
+still fails, and the scoreboard API returns 116 college markets with real
+percentages, identical to a home connection. The page was the blocked thing,
+not the data.
 
-To collect this automatically, run it from a home machine on a schedule --
-Windows Task Scheduler, twice a day is plenty for a weekly sport:
-
-    schtasks /create /tn "CFB splits" /tr ^
-      "cmd /c cd /d C:\\Users\\icecu\\OneDrive\\Documents\\NFLApp && ^
-       python scripts\\fetch_cfb_splits.py" /sc daily /st 09:00 /ri 720 /du 24:00
+It now reads the API for the current week and the next one -- fetch_current()
+reports which week it answered with, so no CFBD call is spent discovering it
+and the Saturday-to-Sunday rollover cannot leave next week's games uncovered.
+The scheduled task still works and is kept as a fallback.
 
 Usage:
     python fetch_cfb_splits.py
@@ -75,8 +74,10 @@ import requests
 
 warnings.filterwarnings("ignore")
 
-from action_splits import fetch, outcomes, kickoff, CONSENSUS_BOOK
+from action_splits import (fetch_current, fetch_week, outcomes, kickoff,
+                           CONSENSUS_BOOK)
 from cfb_teams import to_key, cfbd_to_key
+from config import CURRENT_SEASON as SEASON
 from score_week import supabase
 
 URL = "https://www.actionnetwork.com/ncaaf/public-betting"
@@ -120,9 +121,24 @@ def main():
     dry = "--dry-run" in sys.argv
     want = wanted_books(sys.argv)
 
-    games, books, observed, age = fetch('ncaaf')
-    print(f"Action Network: {len(games)} games, page {age}s old "
-          f"(generated ~{observed.isoformat()[:19]}Z)")
+    # Current week, then the next one. A college week rolls over on Sunday
+    # while next Saturday's markets are already up, so asking only for
+    # "current" leaves the games being bet soonest uncovered for a day.
+    games, books, observed, age, week = fetch_current('ncaaf', SEASON)
+    print(f"Action Network ncaaf week {week}: {len(games)} games, "
+          f"{age}s old (generated ~{observed.isoformat()[:19]}Z)")
+    if week is not None and "--this-week" not in sys.argv:
+        # Only network failures are tolerated here. A bare `except Exception`
+        # reported "week 7 unavailable" for a plain unpacking mistake on this
+        # very line -- fetch_week returns four values, fetch_current five --
+        # which is the shape of every silent-degradation bug in this project.
+        try:
+            nxt, _, _, nage = fetch_week('ncaaf', week + 1, SEASON)
+        except requests.RequestException as e:
+            print(f"  week {week + 1} unavailable ({type(e).__name__})")
+        else:
+            games = games + nxt
+            print(f"  + week {week + 1}: {len(nxt)} games ({nage}s old)")
 
     board = (supabase.table("cfb_predictions")
              .select("game_id, home_team, away_team, commence_time")
