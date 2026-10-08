@@ -858,8 +858,10 @@ def build_projections(features: pd.DataFrame, lh_by_game: dict,
         rlm = detect_rlm(public_bet_pct, spread_line_movement, market="spread")
 
         # --- Spread ---
-        # model_spread now predicts home_cover_surplus directly (positive = home covers).
-        # No need to combine with dk_spread — the model output IS the edge.
+        # model_spread is the residual model's home_cover_surplus at the line
+        # currently on the board (positive = home covers). No need to combine
+        # with dk_spread — the output IS the edge, in the same units as the
+        # residual_pred that drives the CLV tab's qualifying flag.
         spread_edge = float(row["model_spread"])
         spread_ev = calculate_ev(abs(spread_edge), SPREAD_CALIBRATOR)
         spread_pick_home = spread_edge > 0
@@ -1030,17 +1032,41 @@ def run_weekly_scoring(season: int, week: int):
     injuries = fetch_injury_aggregates()
     features = build_feature_matrix(games, metrics, lines, weather, injuries)
 
-    # Load models
-    spread_model = joblib.load(MODELS_DIR / "spread_model.joblib")
+    # Load models.
+    #
+    # The spread edge comes from nfl_residual_model, not spread_model.joblib.
+    # Both predict home cover surplus, but spread_model has 59 features and not
+    # one of them is a line, so its output was identical whether the market said
+    # BAL -4.5 or BAL +3.5 while being displayed beside dk_line as "the edge at
+    # this number". The residual model at least takes week_open_spread_home as
+    # an input, and it is the validated artifact -- 713 bets at bar 1.5, cluster
+    # CI [53.4, 60.8], 0/25 permutations reached it -- whereas spread_model's own
+    # recommendation gate has been disabled as having no demonstrated edge
+    # (SPREAD_MIN_EDGE = 999). It is also the model already driving the
+    # qualifying picks on the CLV tab, so the two surfaces now agree instead of
+    # showing two different numbers for the same question.
+    #
+    # Honest caveat, measured in scripts/line_awareness_check.py: the residual
+    # model barely uses the line (1.6% of gain; a 9-point change moves its
+    # output 0.15), because cover surplus really is near-independent of the line
+    # in an efficient market. This swap buys a validated model and one
+    # consistent answer, NOT a number that re-prices as the market moves.
+    spread_model = joblib.load(MODELS_DIR / "nfl_residual_model.joblib")
+    spread_feats = joblib.load(MODELS_DIR / "nfl_residual_features.joblib")
     total_model = joblib.load(MODELS_DIR / "total_model.joblib")
 
-    # Expose current DK lines as the market feature the model was trained with
+    # Expose current DK lines as the market feature the model was trained with.
+    # week_open_* are the names the residual and movement models use for the
+    # number on the board; market_* are the older spread_model names, kept
+    # because total_model still expects them.
     features["market_spread_home"] = features["dk_spread"]
     features["market_total"]       = features["dk_total"]
+    features["week_open_spread_home"] = features["dk_spread"].astype(float)
+    features["week_open_total"]       = features["dk_total"].astype(float)
 
-    # Score — use the exact feature list the model was trained on,
-    # not the config list (they may differ if weather cols weren't in training data).
-    spread_feat_cols = spread_model.get_booster().feature_names
+    # Score — use the exact feature list each model was trained on, not the
+    # config list (they may differ if weather cols weren't in training data).
+    spread_feat_cols = spread_feats
     total_feat_cols  = total_model.get_booster().feature_names
 
     # Guard BEFORE the zero-fill below — see assert_feature_parity.

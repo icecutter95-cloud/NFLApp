@@ -21,7 +21,12 @@ MODELS_DIR.mkdir(exist_ok=True)
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-REQUIRED_MODEL_FILES = ["spread_model.joblib", "total_model.joblib"]
+# score_week's spread edge comes from the residual model as of 2026-10-08, so
+# it is required rather than optional: without it the scoring run cannot build
+# a spread projection at all. spread_model.joblib stays required because
+# backtest.py and the Model page still reference the older formulation.
+REQUIRED_MODEL_FILES = ["spread_model.joblib", "total_model.joblib",
+                        "nfl_residual_model.joblib", "nfl_residual_features.joblib"]
 # Calibration files are optional — score_week.py falls back to the old guessed
 # linear EV formula if they're missing, so a missing calibration file should
 # warn, not crash the whole run the way a missing prediction model must.
