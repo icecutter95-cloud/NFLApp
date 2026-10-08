@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, Info, Target, AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import { moveClass, moveTitle } from '../lib/movement'
+import { moveClass, moveTitle, adverse, adverseClass } from '../lib/movement'
 import { SIGNAL_TONE, signalText } from '../lib/signal'
 
 // This view tracks the LINE MOVEMENT model, which is a different question from
@@ -718,6 +718,7 @@ export default function ClvPanel({ season }) {
             const key = `${r.game_id}_${r.bet_type}`
             const age = pickAge(r, now)
             const bb = bestFor(r, best[pair])
+            const adv = adverse(r)
             const isOpen = expanded === key
             return (
               <div key={key} className={
@@ -750,6 +751,12 @@ export default function ClvPanel({ season }) {
                     <Target size={11} className={`shrink-0 ${isTotal ? 'text-amber-500' : 'text-green-500'}`} />
                   )}
                   <span className="text-gray-100 text-sm font-medium truncate">{r.away_team} @ {r.home_team}</span>
+                  {adv && (
+                    <span className={`shrink-0 border rounded px-1 text-[10px] leading-tight tabular-nums ${adverseClass(adv)}`}
+                          title={adv.title}>
+                      {adv.label}
+                    </span>
+                  )}
                   <span className="ml-auto text-xs tabular-nums shrink-0" title={age ? `${age.label} — ${age.note}` : ''}>
                     {age ? <span className={age.cls}>{age.text}</span> : <span className="text-gray-700">Wk {r.week}</span>}
                   </span>
@@ -829,6 +836,12 @@ export default function ClvPanel({ season }) {
                   <div className="text-[10px] text-gray-600 truncate">
                     {bb ? bookName(bb.book) : 'no book quotes yet'}
                   </div>
+                  {adv && (
+                    <div className={`mt-0.5 inline-block border rounded px-1 text-[10px] leading-tight tabular-nums ${adverseClass(adv)}`}
+                         title={adv.title}>
+                      market {adv.label}
+                    </div>
+                  )}
                 </div>
                 <div className="text-right text-gray-400 text-xs tabular-nums">{fmt(r.closing_line)}</div>
                 <div className={`text-right text-xs tabular-nums ${moveClass(r)}`}

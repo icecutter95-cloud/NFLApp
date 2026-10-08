@@ -14,7 +14,7 @@
 --   job  name                        schedule        note
 --   2    refresh-public-betting      REMOVED 2026-10-07  -- see note below
 --   3    refresh-weather-wednesday   0 9 * * 3       weekly
---   4    refresh-injuries            40 12 * * *     daily
+--   4    refresh-injuries            40 12 * * *     daily  -- FIXED 2026-10-08
 --   9    refresh-odds-daily          0 * * * *       HOURLY since 2026-09-11 (was 0 12 * * *)
 --   13   log-clv-daily               30 12 * * *     daily; redundant with the 3-hourly
 --                                                    GitHub log-clv workflow, harmless
@@ -43,3 +43,33 @@ select cron.alter_job(9, schedule => '0 * * * *');
 -- fed from nfl_public_splits it would flag 15 of 80 games this season, with
 -- the model already on the sharp side in 7 of the 14 graded ones (8-6). Not
 -- done, deliberately, and not to be done without asking.
+
+
+-- refresh-injuries (job 4), fixed 2026-10-08
+-- -----------------------------------------
+-- 486 runs, every one "succeeded", zero rows written, for the life of the app.
+-- ESPN nests injuries by team (payload.injuries is 32 team objects each with
+-- their own .injuries array); the function read it as a flat list. Every
+-- athlete lookup was undefined and the guard dropped all 32 teams, so it
+-- returned {success: true, count: 0} and pg_cron agreed.
+--
+-- This one had teeth. The spread, residual and movement models all carry ten
+-- inj_* features and were TRAINED on real values, while injury_flags was empty
+-- and fetch_injury_aggregates zero-filled them at serve time -- the exact
+-- train/serve skew its own docstring warns about. inj_qb_out_home and
+-- inj_qb_out_away have been 0 for every game ever scored. A starting
+-- quarterback ruled out moved our number not at all while moving the market
+-- seven points.
+--
+-- After the fix: 282 rows across 32 teams (194 questionable, 76 out, 12
+-- doubtful), 3 quarterbacks out. An empty parse is now an explicit 500 rather
+-- than a cheerful success, and it refuses to wipe a populated table.
+--
+-- Two notes for whoever reads this next:
+--   * The feature follows ESPN's official designation. A player widely
+--     expected to be out can sit at "Questionable" until game day, so
+--     inj_qb_out can be 0 on a quarterback nobody expects to play.
+--   * injury_flags.is_qb_override / qb_downgrade_pts are vestigial:
+--     fetch_injury_aggregates never reads them and score_week hardcodes
+--     "qb_override": False on every projection. The manual override the UI
+--     implies does not exist. Left alone, not wired in.

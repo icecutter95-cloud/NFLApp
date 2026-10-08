@@ -49,3 +49,69 @@ export function moveTitle(row) {
     ? `Moved toward ${side} — the number we hold is better than the market's now`
     : `Moved away from ${side} — the market has a better number than the one we hold`
 }
+
+// ---------------------------------------------------------------------------
+// Adverse movement
+// ---------------------------------------------------------------------------
+//
+// A frozen pick is graded at the number it was taken at, which is the honest
+// way to measure CLV but hides a question the bettor actually faces: the
+// market has run several points away from this side, so is the pick still
+// worth making at today's number?
+//
+// Measured on all 811 graded spread picks in movement_history (2023-2025),
+// bucketed by how far the line moved before kickoff. Record AT THE OPENING
+// NUMBER, so this is not a CLV artefact -- it is whether the pick won:
+//
+//     ran away 6+ pts      1-5    16.7%
+//     ran away 4-6         3-10   23.1%
+//     ran away 2-4        23-29   44.2%
+//     ran away 0-2        94-86   52.2%
+//     flat                81-67   54.7%
+//     came to us 0-2     158-121  56.6%
+//     came to us 2-4      56-47   54.4%
+//     came to us 4+       22-8    73.3%
+//
+// Combined: ran away 4+ is 4-15 (21%, p=0.019); everything else is 411-329
+// (55.5%, p=0.003). Eight buckets, monotonic, symmetric at both ends. Totals
+// show the same shape -- ran away 2+ is 26-50 (34.2%, p=0.008).
+//
+// The model's entire measured edge lives in games the market did NOT move
+// against. Partly that is self-fulfilling: a six-point move happens on news,
+// and news is the input the pipeline is weakest on. That is the mechanism, not
+// a confound, which is exactly why it is worth a badge.
+//
+// DISPLAY ONLY. This changes no pick, no tier and no qualifying flag.
+export const ADVERSE_WARN = 3.0
+export const ADVERSE_SEVERE = 6.0
+
+export function adverse(row) {
+  if (row.predicted_side == null) return null
+  if (row.clv_points == null) return null
+  const against = -row.clv_points
+  if (against < ADVERSE_WARN) return null
+  const severe = against >= ADVERSE_SEVERE
+  const side = row.predicted_side === 'home' ? row.home_team
+             : row.predicted_side === 'away' ? row.away_team
+             : row.predicted_side
+  return {
+    level: severe ? 'severe' : 'warn',
+    label: `−${against.toFixed(1)}`,
+    pts: against,
+    title:
+      `The market has moved ${against.toFixed(1)} points away from ${side} ` +
+      `since this pick was frozen.\n\n` +
+      `Historically (811 graded spread picks, 2023-2025) picks the market ` +
+      `ran ${severe ? '6+' : '4+'} points away from went ` +
+      `${severe ? '1-5 (17%)' : '4-15 (21%, p=0.02)'} at the number they were ` +
+      `taken at, against 55.5% for every other pick.\n\n` +
+      `A move this size is usually news the model has not priced. ` +
+      `Display only — this does not change the pick or the tier.`,
+  }
+}
+
+export function adverseClass(a) {
+  return a?.level === 'severe'
+    ? 'text-red-300 bg-red-950/60 border-red-800'
+    : 'text-orange-300 bg-orange-950/50 border-orange-800'
+}
