@@ -321,6 +321,15 @@ def _blend_metrics(in_season: pd.DataFrame, prior: pd.DataFrame,
 
     prior_idx = prior.set_index("team")
     out = in_season.copy()
+    # A blend of two integers is rarely an integer. Any metric column arriving
+    # as int64 -- a count, or a column that happened to hold whole numbers for
+    # the week being read -- raises "Invalid value for dtype int64" on
+    # assignment in pandas 2.x and takes the whole scoring run with it. This
+    # went unseen for as long as team_metrics had no current-season rows at
+    # all, because with nothing to blend the loop below never ran.
+    for c in metric_cols:
+        if pd.api.types.is_integer_dtype(out[c]):
+            out[c] = out[c].astype(float)
 
     for i in out.index:
         team = out.at[i, "team"]

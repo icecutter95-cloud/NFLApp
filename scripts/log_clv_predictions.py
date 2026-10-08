@@ -39,6 +39,16 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 from config import MODELS_DIR, CURRENT_SEASON
+
+# Stamped on every row rather than left to the column default, which was
+# 'movement_v1'. v1 rows were served with team metrics that held no 2026 data
+# at all -- compute_metrics stopped at 2025 and the Update Metrics workflow had
+# no schedule -- so weeks 4-6 of 2026 were predicted from end-of-2025 form.
+# Fixed 2026-10-08; everything logged from here carries real current-season
+# metrics and real injuries. See scripts/rebuild_predictions_v2.py for the
+# point-in-time reconstruction of the affected weeks, and note that a row is
+# never updated: a changed model gets a new version string.
+MODEL_VERSION = "movement_v2"
 from score_week import (supabase, fetch_all, fetch_current_schedule,
                         current_week_number, weeks_in_window, fetch_team_metrics,
                         fetch_latest_lines, fetch_weather,
@@ -165,7 +175,11 @@ def run_week(season: int, week: int, dry: bool) -> None:
 
     # Which games already have a frozen prediction? Never overwrite: the whole
     # point is to hold the number from when the board first posted.
-    existing = supabase.table("line_predictions").select("game_id, bet_type")         .eq("season", season).eq("week", week).execute()
+    # Version-aware: a v1 row for the same game must not stop v2 being frozen,
+    # and the unique index is now (game_id, bet_type, model_version).
+    existing = (supabase.table("line_predictions").select("game_id, bet_type")
+                .eq("season", season).eq("week", week)
+                .eq("model_version", MODEL_VERSION).execute())
     already = {(r["game_id"], r["bet_type"]) for r in (existing.data or [])}
 
     def make_row(gid, g, bet_type, opener, movement, side, disagree, resid=None):
@@ -188,6 +202,7 @@ def run_week(season: int, week: int, dry: bool) -> None:
             "taken_line": (-opener if (bet_type == "spread" and side == "away") else opener),
             "margin_disagreement": disagree,
             "residual_pred": resid,
+            "model_version": MODEL_VERSION,
         }
 
     # game_id must match line_open_close (The Odds API event id) so the view can

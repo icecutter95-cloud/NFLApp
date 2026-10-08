@@ -73,3 +73,34 @@ select cron.alter_job(9, schedule => '0 * * * *');
 --     fetch_injury_aggregates never reads them and score_week hardcodes
 --     "qb_override": False on every projection. The manual override the UI
 --     implies does not exist. Left alone, not wired in.
+
+
+-- line_predictions versioning + clv_tracking preference, 2026-10-08
+-- -----------------------------------------------------------------
+-- team_metrics held no 2026 rows until 2026-10-08, so 2026 predictions were
+-- built from end-of-2025 form. Checked per freeze timestamp the damage was
+-- narrower than it looked: weeks 1-3 were frozen before any 2026 week had
+-- finished, so pure-2025 prior WAS the correct point-in-time answer and v2
+-- reproduces v1 exactly there. Weeks 4, 5 and 6 are the affected ones.
+--
+-- Rather than overwrite, line_predictions is now versioned: the unique index
+-- moved from (game_id, bet_type) to (game_id, bet_type, model_version).
+-- movement_v1 rows are what the app actually served and are never deleted;
+-- movement_v2 rows are the same models fed point-in-time metrics. 186 of each.
+-- clv_tracking does DISTINCT ON (game_id, bet_type) preferring v2, so the
+-- board shows 186 rows and not 372 -- verified, and the fan-out it prevents is
+-- the same one that once turned 73 CFB predictions into 75.
+--
+-- Two leaks found while building the reconstruction, both caught by the rule
+-- that weeks 1-3 MUST reproduce v1 exactly:
+--   * the observed-weather table is one row per game refreshed weekly, so it
+--     holds a forecast made AFTER each freeze. Including it flipped eight
+--     totals in weeks 1-3 while leaving the spreads identical. Weather is now
+--     passed empty, as v1 effectively had it.
+--   * injury_flags has no history at all, so inj_* stays zero in v2 weeks 1-6.
+--     Weeks 7+ carry real injuries, which is a real seam in the v2 series.
+--
+-- v2 is not a track record: nobody could have bet it, because the app showed
+-- v1 at the time. It is the best estimate of what the model would have said.
+-- The trap deliberately avoided: v2's weeks 4-6 must NOT be used to choose
+-- qualifying thresholds that are then graded on those same games.
