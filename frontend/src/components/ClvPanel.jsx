@@ -62,10 +62,18 @@ const FRESHNESS = [
 ]
 
 function pickAge(row, now) {
-  if (!row.predicted_at) return null
+  // Age of the NUMBER, not of the row. These were the same thing until
+  // movement_v2: a rebuilt pick carries predicted_at = the moment of the
+  // point-in-time rebuild while its open_line is the opener frozen days
+  // earlier, so reading predicted_at showed ten-day-old numbers as minutes old
+  // — directly contradicting the panel's own advice to bet promptly or skip.
+  // line_frozen_at is the earliest capture across every version of this
+  // game-market; the fallback keeps older rows working.
+  const frozen = row.line_frozen_at ?? row.predicted_at
+  if (!frozen) return null
   // Once a game kicks off, age is meaningless — it is no longer bettable.
   if (row.commence_time && new Date(row.commence_time) < now) return null
-  const hrs = (now - new Date(row.predicted_at)) / 36e5
+  const hrs = (now - new Date(frozen)) / 36e5
   if (hrs < 0) return null
   const tier = FRESHNESS.find(f => hrs < f.max)
   const text = hrs < 1 ? `${Math.round(hrs * 60)}m`

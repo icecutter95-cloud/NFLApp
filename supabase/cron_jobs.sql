@@ -104,3 +104,16 @@ select cron.alter_job(9, schedule => '0 * * * *');
 -- v1 at the time. It is the best estimate of what the model would have said.
 -- The trap deliberately avoided: v2's weeks 4-6 must NOT be used to choose
 -- qualifying thresholds that are then graded on those same games.
+
+-- clv_tracking.line_frozen_at, 2026-10-08
+-- ---------------------------------------
+-- predicted_at and "when the number was frozen" were the same thing until
+-- movement_v2 existed. A v2 row carries predicted_at = the moment of the
+-- rebuild while its open_line is the opener captured days earlier, so the CLV
+-- tab's age column showed every rebuilt pick as minutes old -- beside the
+-- panel's own advice that a pick is worth +1.55 CLV in its first six hours and
+-- nothing after three days. Week 5's picks read "6m" on ten-day-old numbers,
+-- two of which no longer existed at any book.
+--
+-- line_frozen_at is min(predicted_at) across every version of that
+-- game-market, and pickAge() in ClvPanel.jsx now reads it. Week 5 renders 11d.
