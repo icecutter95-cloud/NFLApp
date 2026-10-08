@@ -43,7 +43,7 @@ class SeasonNotPlayedYet(RuntimeError):
     skip the season rather than aborting the whole run.
     """
 
-from config import DATA_DIR, ALL_HISTORICAL_SEASONS
+from config import DATA_DIR, ALL_HISTORICAL_SEASONS, CURRENT_SEASON
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +602,20 @@ def build_rolling_metrics(game_level: pd.DataFrame, season: int) -> pd.DataFrame
     weeks = sorted(game_level["week"].unique())
     all_cols = METRIC_COLS + ADJUSTED_COLS
 
+    # The week-W row is built from games strictly BEFORE W, so with games
+    # through week 4 the newest row this produced was week 4 -- built from
+    # weeks 1-3. Scoring week 5 then fell back to the week-4 row and the model
+    # saw metrics a week staler than it trained on, discarding the week just
+    # played. For a finished season there is no next week and nothing changes;
+    # for the season in progress, emit the row for the upcoming week too.
+    #
+    # Deliberately restricted to CURRENT_SEASON: adding a trailing week to a
+    # historical season would change team_metrics_all.parquet, which
+    # build_dataset merges on `week` to build the training set. Live serving
+    # gets the extra row; training parity is untouched.
+    if season == CURRENT_SEASON and weeks:
+        weeks = weeks + [int(max(weeks)) + 1]
+
     for week in tqdm(weeks, desc=f"{season} weeks", leave=False):
         history_all = game_level[game_level["week"] < week]
         if history_all.empty:
@@ -637,11 +651,21 @@ def build_rolling_metrics(game_level: pd.DataFrame, season: int) -> pd.DataFrame
 # ---------------------------------------------------------------------------
 
 def _load_pbp(season: int) -> pd.DataFrame:
-    """Download PBP for a season and cache it locally as Parquet."""
+    """Download PBP for a season and cache it locally as Parquet.
+
+    A finished season never changes, so caching it is free. The CURRENT season
+    gains a week of plays every week, so a cache hit would freeze it at
+    whatever week it was first written -- the same staleness that left
+    team_metrics with no 2026 rows at all, one layer further down. The
+    in-progress season is always re-downloaded.
+    """
     cache_path = DATA_DIR / f"pbp_{season}.parquet"
-    if cache_path.exists():
+    if cache_path.exists() and season != CURRENT_SEASON:
         print(f"  Loading {season} PBP from local cache...")
         return pd.read_parquet(cache_path)
+    if cache_path.exists():
+        print(f"  {season} is in progress — re-downloading PBP rather than "
+              f"serving a cache from week {_cached_week(cache_path)}")
     print(f"  Downloading {season} PBP from nfl_data_py (first run, this takes a few minutes)...")
     try:
         pbp = nfl.import_pbp_data([season], downcast=True, cache=False,
@@ -663,6 +687,14 @@ def _load_pbp(season: int) -> pd.DataFrame:
     pbp.to_parquet(cache_path, index=False)
     print(f"  Cached -> {cache_path.name}")
     return pbp
+
+
+def _cached_week(path) -> str:
+    """Highest week in a cached PBP file, for the log line only."""
+    try:
+        return str(int(pd.read_parquet(path, columns=["week"]).week.max()))
+    except Exception:
+        return "?"
 
 
 def build_game_level(season: int, verbose: bool = True) -> pd.DataFrame:
@@ -744,17 +776,31 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     force = "--force" in sys.argv
 
-    seasons = [int(args[0])] if args else ALL_HISTORICAL_SEASONS
+    # CURRENT_SEASON belongs in the default list. ALL_HISTORICAL_SEASONS stops
+    # at 2025, so a scheduled run with no argument computed 2018-2025 and never
+    # touched the season being bet. team_metrics held nothing for 2026 five
+    # weeks into it, score_week printed "no 2026 data yet -- using end of 2025
+    # (pure prior)", and every projection on the board was a 2025 model wearing
+    # a 2026 label. The only way 2026 ever got built was someone typing it into
+    # the workflow's dispatch box, which nobody had.
+    seasons = [int(args[0])] if args else ALL_HISTORICAL_SEASONS + [CURRENT_SEASON]
+    seasons = sorted(dict.fromkeys(seasons))
     all_frames = []
 
     for season in seasons:
         out_path = DATA_DIR / f"team_metrics_{season}.parquet"
-        if out_path.exists() and not force:
+        # A finished season is immutable, so caching it is right. The CURRENT
+        # season gains games every week, so serving it from cache would freeze
+        # it at whatever week it was first built -- the same bug one layer down,
+        # and it would have bitten the moment the line above was fixed.
+        stale_ok = season != CURRENT_SEASON and not force
+        if out_path.exists() and stale_ok:
             print(f"Skipping {season} — already cached (use --force to recompute)")
             all_frames.append(pd.read_parquet(out_path))
             continue
-        elif out_path.exists() and force:
-            print(f"--force: recomputing {season} (deleting cached file)")
+        elif out_path.exists():
+            why = "--force" if force else f"{season} is in progress"
+            print(f"{why}: recomputing {season} (deleting cached file)")
             out_path.unlink()
 
         try:

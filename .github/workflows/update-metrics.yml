@@ -1,17 +1,36 @@
 name: Update Metrics
 
+# Rebuilds team_metrics, the rolling EPA/CPOE form the spread, total, residual
+# and movement models all read at serve time.
+#
+# This had NO schedule until 2026-10-08 -- dispatch only, with a required
+# season input. Nobody pressed it with "2026" in the box, so team_metrics held
+# zero 2026 rows five weeks into the season and every projection on the board
+# was built from end-of-2025 form while claiming to be a 2026 number.
+# compute_metrics also defaulted to ALL_HISTORICAL_SEASONS, which stops at
+# 2025, so even a no-argument run would have skipped the season being bet.
+# Both fixed; this puts it on a timer so it cannot silently rot again.
+
 on:
   workflow_dispatch:
     inputs:
       season:
-        description: 'NFL season to compute and upload (e.g. 2026)'
-        required: true
-        default: '2026'
+        description: 'NFL season to compute and upload (blank = all, incl. current)'
+        required: false
+        default: ''
+  schedule:
+    # Tuesday 10:00 UTC — after Monday night is final and graded, before the
+    # next week's board is anything anyone bets. One rebuild a week is enough:
+    # the rolling windows only change when games are played.
+    - cron: '0 10 * * 2'
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The in-progress season is always re-downloaded now rather than served
+    # from a stale cache, and a runner caches nothing between runs, so a full
+    # default run pulls every season's play-by-play.
+    timeout-minutes: 50
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
