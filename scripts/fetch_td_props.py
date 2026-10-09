@@ -31,6 +31,7 @@ Usage:
     python fetch_td_props.py --dry-run
 """
 
+import os
 import sys
 import warnings
 from datetime import datetime, timedelta, timezone
@@ -47,7 +48,17 @@ from score_week import supabase, fetch_all
 
 API = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl"
 MARKETS = {"anytime": "player_anytime_td", "first": "player_1st_td"}
-KEY = dotenv_values(DATA_DIR.parent / ".env").get("ODDS_API_KEY")
+
+# Environment FIRST, then the .env file. dotenv_values() reads the file and
+# nothing else -- it does not fall back to os.environ -- so on a GitHub runner,
+# where the secret arrives as an environment variable and no .env exists, the
+# key was always None. Combined with the clean `return` this used to do, the
+# workflow ran every six hours from 2026-10-05 to 2026-10-08, reported success
+# every time, and wrote not one row. That is the same shape as the three dead
+# crons found the same week (refresh-public-betting, refresh-injuries, and the
+# metrics job that never saw the current season); this one was self-inflicted.
+KEY = (os.environ.get("ODDS_API_KEY")
+       or dotenv_values(DATA_DIR.parent / ".env").get("ODDS_API_KEY"))
 
 
 def roster_ids(season: int):
@@ -162,7 +173,11 @@ def main():
     cutoff = datetime.now(timezone.utc) + timedelta(days=days)
 
     if not KEY:
-        print("ODDS_API_KEY not set"); return
+        # Hard failure, not a quiet return. A capture job that cannot reach the
+        # feed has done nothing, and a green tick saying otherwise is worse
+        # than a red one.
+        sys.exit("ODDS_API_KEY not set (checked os.environ then .env) — "
+                 "nothing captured")
     evs = requests.get(f"{API}/events", params={"apiKey": KEY}, timeout=30).json()
     evs = [e for e in evs
            if datetime.fromisoformat(e["commence_time"].replace("Z", "+00:00")) < cutoff]
