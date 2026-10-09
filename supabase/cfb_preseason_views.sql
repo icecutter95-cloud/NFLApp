@@ -170,3 +170,26 @@ create table if not exists public.preseason_results (
 -- The effect is the opposite of flattering, which is the point: positive-EV
 -- rows fell from a list topped by +11.4% to 5 of 255 anytime (top +4.7%) and
 -- 0 of 50 on first TD. Most of the apparent edge was the flat assumption.
+
+-- nfl_injury_log, applied 2026-10-08
+-- ----------------------------------
+-- injury_flags is a snapshot: refresh-injuries deletes every machine-written
+-- row and re-inserts, so it answers "who is hurt now" and nothing else. That
+-- left one question unanswerable -- when a starter is ruled out, how long does
+-- each book take to reprice his team-mates' touchdown odds? -- because nothing
+-- recorded WHEN a designation changed. The props side already keeps every
+-- price change; this is the other half of that join, and it is the one
+-- plausible edge in that market resting on speed rather than forecasting.
+--
+-- Append-only, one row per CHANGE rather than per poll: the feed carries ~289
+-- flagged players daily, so logging polls would add six figures of rows a year
+-- to say nothing. A player dropping off the report is logged as "cleared",
+-- which matters as much as the transition onto it. prev_status sits on the row
+-- so a transition reads without a self-join.
+--
+-- refresh-injuries writes it in the window where both the old snapshot and the
+-- new parse exist, best-effort so a logging failure cannot cost the refresh.
+-- First run: 75 changes (41 first sightings, 34 cleared).
+--
+-- It cannot be backfilled. Section 4 of scripts/td_props_analysis.py can see
+-- no further back than 2026-10-08.

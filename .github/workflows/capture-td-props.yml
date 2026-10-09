@@ -67,3 +67,16 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python scripts/grade_td_props.py --report
+
+      - name: Measurement harness
+        # Prints the four open questions with their current sample sizes:
+        # de-vig comparison, calibration, price movement, injury repricing.
+        # Expected to say "not enough yet" for several weeks -- the point is
+        # that the answer appears in a log the moment the data crosses each
+        # threshold, rather than when someone remembers to look.
+        if: github.event.schedule == '45 13 * * 2' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/td_props_analysis.py

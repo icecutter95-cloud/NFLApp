@@ -74,6 +74,7 @@ serve(async (req) => {
 
     const rows: Record<string, unknown>[] = [];
     const now = new Date().toISOString();
+    let loggedChanges = 0;
     const seen = new Set<string>();
     let skippedActive = 0;
     let skippedNoTeam = 0;
@@ -129,6 +130,69 @@ serve(async (req) => {
       );
     }
 
+    // Append status CHANGES to nfl_injury_log before the snapshot is replaced.
+    //
+    // injury_flags is about to be deleted and rewritten, so this is the only
+    // moment the previous state and the new one both exist. Without it there is
+    // no record of WHEN a designation changed, which is what the touchdown
+    // props work needs: the gap between a starter being ruled out and each book
+    // repricing his backup is the one plausible edge in that market that rests
+    // on speed rather than forecasting.
+    //
+    // Changes only. The feed carries ~282 flagged players and is polled daily,
+    // so logging every poll would append six figures of rows a year to say
+    // nothing. A player who drops off the report entirely is logged as
+    // "cleared" -- that transition matters as much as the one onto it.
+    try {
+      const prevRows = await supabase.from("injury_flags")
+        .select("team, player_name, position, status")
+        .eq("is_qb_override", false);
+      const prev = new Map<string, { status: string; position: string | null }>();
+      for (const r of prevRows.data ?? []) {
+        prev.set(`${r.team}|${r.player_name}`, {
+          status: r.status, position: r.position,
+        });
+      }
+      const changes: Record<string, unknown>[] = [];
+      const seenNow = new Set<string>();
+      for (const r of rows) {
+        const key = `${r.team}|${r.player_name}`;
+        seenNow.add(key);
+        const was = prev.get(key);
+        if (!was || was.status !== r.status) {
+          changes.push({
+            team: r.team,
+            player_name: r.player_name,
+            position: r.position,
+            prev_status: was ? was.status : null,
+            status: r.status,
+            note: was ? "status change" : "first sighting",
+          });
+        }
+      }
+      // Off the report: previously flagged, absent now.
+      for (const [key, was] of prev) {
+        if (seenNow.has(key)) continue;
+        const [team, player_name] = key.split("|");
+        changes.push({
+          team,
+          player_name,
+          position: was.position,
+          prev_status: was.status,
+          status: "cleared",
+          note: "no longer listed",
+        });
+      }
+      if (changes.length > 0) {
+        // Best effort: a logging failure must not cost the refresh itself.
+        const logIns = await supabase.from("nfl_injury_log").insert(changes);
+        if (logIns.error) console.error("injury log:", logIns.error.message);
+      }
+      loggedChanges = changes.length;
+    } catch (e) {
+      console.error("injury log skipped:", String(e).slice(0, 200));
+    }
+
     // Replace the machine-written rows; never touch a manual QB override.
     const del = await supabase.from("injury_flags").delete()
       .eq("is_qb_override", false);
@@ -160,6 +224,7 @@ serve(async (req) => {
         by_status: byStatus,
         qbs_out: rows.filter((r) => r.position === "QB" && r.status === "out")
           .length,
+        logged_changes: loggedChanges,
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },
     );
