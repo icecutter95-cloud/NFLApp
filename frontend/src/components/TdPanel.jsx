@@ -13,8 +13,11 @@
 //
 //  2. EV depends on a de-vig, and the de-vig is only exact for FIRST TD, where
 //     the probabilities must sum to 1 because exactly one player scores first.
-//     Anytime scales to 4.3 scorers per game (the measured 2025 mean), which is
-//     an assumption: a shootout has more scorers than a slog.
+//     Anytime scales to the GAME's own expected scorer count, measured on 2,214
+//     games as -0.101 + 0.0998 x game total -- near enough total/10, monotonic
+//     across every total bucket, 3.7 scorers at a 38 total and 5.2 at 54. Still
+//     an estimate (r=0.266: the total explains the mean, not the game), but no
+//     longer the same 4.3 for a slog and a shootout.
 //
 //  3. Multiplicative de-vig overstates longshots, because books hold more on
 //     them. Unfiltered, the top of an EV list is all +3000 bench players. The
@@ -84,7 +87,7 @@ export default function TdPanel() {
       if (!m.has(r.event_id)) {
         m.set(r.event_id, {
           id: r.event_id, label: `${r.away_team} @ ${r.home_team}`,
-          kick: r.commence_time,
+          kick: r.commence_time, total: r.game_total, scorers: r.assumed_scorers,
         })
       }
     })
@@ -144,14 +147,18 @@ export default function TdPanel() {
           best available price against the median book, in payout terms.{' '}
           <span className="text-amber-100">EV</span> needs a de-vig, which is
           exact only for first TD (probabilities must sum to 1); anytime scales
-          to 4.3 scorers a game, the measured 2025 mean.
+          to the game's own expected scorer count, which tracks the total at
+          roughly total ÷ 10 (measured on 2,214 games, monotonic across every
+          bucket: 3.7 scorers at a 38 total, 5.2 at 54).
         </p>
         <p className="text-amber-200/70">
           De-vigging multiplicatively overstates longshots because books hold
           more on them, so the <span className="text-amber-100">realistic</span>{' '}
           filter hides anything longer than +{REALISTIC_MAX_PRICE}. Turn it off
           and the EV list fills with +3000 bench players — that is the artifact,
-          not an edge.
+          not an edge. Worth noticing: where the de-vig is exact (first TD)
+          almost nothing prices as positive, which is the market telling you it
+          is efficient on the obvious names.
         </p>
       </div>
 
@@ -178,7 +185,11 @@ export default function TdPanel() {
         <select value={game} onChange={e => setGame(e.target.value)}
           className="bg-gray-900 border border-gray-800 rounded px-2 py-1 text-xs text-gray-300">
           <option value="all">All games</option>
-          {games.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}
+          {games.map(g => (
+            <option key={g.id} value={g.id}>
+              {g.label}{g.total != null ? ` · ${g.total} → ${g.scorers} scorers` : ''}
+            </option>
+          ))}
         </select>
         <input value={query} onChange={e => setQuery(e.target.value)}
           placeholder="player or team"
@@ -231,8 +242,14 @@ export default function TdPanel() {
                 {/* desktop */}
                 <div className="hidden md:grid grid-cols-[1fr_150px_90px_76px_70px_70px_60px] gap-2 px-3 py-2 text-sm items-center">
                   <span className="text-gray-100 truncate">{r.player}</span>
-                  <span className="text-gray-500 text-xs truncate" title={fmtKick(r.commence_time)}>
+                  <span className="text-gray-500 text-xs truncate"
+                        title={`${fmtKick(r.commence_time)}${r.game_total != null
+                          ? ` · total ${r.game_total}, de-vig scaled to ${r.assumed_scorers} scorers`
+                          : ' · no total, de-vig scaled to the 4.43 league mean'}`}>
                     {r.away_team} @ {r.home_team}
+                    {r.game_total != null && (
+                      <span className="text-gray-700 ml-1">{r.game_total}</span>
+                    )}
                   </span>
                   <span className="text-right tabular-nums">
                     <span className="text-gray-200">{fmtPrice(r.best_price)}</span>

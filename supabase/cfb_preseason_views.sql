@@ -152,3 +152,21 @@ create table if not exists public.preseason_results (
 -- beats -110), so that part is safe -- but best-of-N is biased upward by
 -- construction, so ev_pct is what shopping plus the de-vig implies and is not
 -- a validated edge. Nothing on the tab is flagged as a bet.
+
+-- nfl_td_board: game-specific scorer count, 2026-10-08
+-- ----------------------------------------------------
+-- The anytime de-vig scaled every game to 4.3 scorers. Measured on 2,214
+-- games with both a closing total and play-by-play:
+--
+--   scorers = -0.101 + 0.0998 x closing_total   (r=0.266, p=3.4e-37)
+--   buckets: <=40 3.73 | 40-44 4.13 | 44-47 4.45 | 47-50 4.71 | >50 5.21
+--
+-- Monotonic, near enough total/10, and a ~40% range the flat 4.3 was spending
+-- on the wrong games. The total joins from line_history, which shares the Odds
+-- API event id with nfl_td_props. Live board now scales 3.64 (HOU@TEN, total
+-- 37.5) to 5.34 (two 54.5 games), and fair probabilities sum exactly to each
+-- game's own count.
+--
+-- The effect is the opposite of flattering, which is the point: positive-EV
+-- rows fell from a list topped by +11.4% to 5 of 255 anytime (top +4.7%) and
+-- 0 of 50 on first TD. Most of the apparent edge was the flat assumption.
