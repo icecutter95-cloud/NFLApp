@@ -8,6 +8,7 @@ import BacktestPanel from './components/BacktestPanel'
 import ClvPanel from './components/ClvPanel'
 import ModelPerformancePanel from './components/ModelPerformancePanel'
 import PreseasonPanel from './components/PreseasonPanel'
+import TdPanel from './components/TdPanel'
 import CfbPanel from './components/CfbPanel'
 
 const CUR_SEASON = 2026
@@ -107,6 +108,8 @@ export default function App() {
 
       {/* Lines only — preseason is deliberately outside the model. */}
       {view === 'preseason' && <PreseasonPanel />}
+
+      {view === 'tds' && <TdPanel />}
 
       {/* College football — models shown, nothing flagged as a bet. */}
       {view === 'cfb' && <CfbPanel season={season} />}

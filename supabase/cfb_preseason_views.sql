@@ -125,3 +125,30 @@ create table if not exists public.preseason_results (
 -- change to any existing NFL object -- check_nfl_invariants.py still passes
 -- unchanged. scripts/fetch_td_props.py captures, scripts/grade_td_props.py
 -- grades and reports.
+
+
+-- nfl_td_board, applied 2026-10-08
+-- --------------------------------
+-- Reduces nfl_td_props (append-only, one row per price change) to the latest
+-- PRE-kickoff price from each book per player per market, then compares the
+-- best available number against a de-vigged consensus.
+--
+-- The de-vig is EXACT for first TD -- exactly one player scores first, so the
+-- probabilities must sum to 1 -- and an ASSUMPTION for anytime, which scales
+-- to 4.3 scorers per game (measured 2025 mean distinct scorers). Verified on
+-- the live board: first sums to 1.0 per game and anytime to 4.3.
+--
+-- And the contrast is the most interesting thing on the tab. Where the de-vig
+-- is exact, nothing is positive: the best first-TD EV on a 16-game board is
+-- -0.6%. Where it rests on the 4.3 assumption, apparent edges up to +11%
+-- appear. That asymmetry is evidence about the ASSUMPTION, not about an edge,
+-- and a game-specific scorer count drawn from the game total is the obvious
+-- next step.
+--
+-- Multiplicative de-vig also overstates longshots, because books hold more on
+-- them; unfiltered, the top of the EV list is all +3000 bench players. The UI
+-- filters to <= +1000 by default for that reason. max(price) is genuinely the
+-- best American number in every case (+200 beats +150, -110 beats -120, +100
+-- beats -110), so that part is safe -- but best-of-N is biased upward by
+-- construction, so ev_pct is what shopping plus the de-vig implies and is not
+-- a validated edge. Nothing on the tab is flagged as a bet.

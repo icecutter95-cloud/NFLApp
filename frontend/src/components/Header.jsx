@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap, LineChart, Target, Eye, GraduationCap } from 'lucide-react'
+import { BarChart2, FlaskConical, RefreshCw, Zap, Play, DatabaseZap, LineChart, Target, Eye, GraduationCap, Hand } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 export default function Header({
@@ -190,6 +190,9 @@ export default function Header({
         {navBtn('performance', <BarChart2 size={12} />,    'My Bets')}
         {navBtn('backtest',    <FlaskConical size={12} />, 'Backtest')}
         {navBtn('preseason',   <Eye size={12} />,          'Preseason')}
+        {/* Capture only — no model, nothing flagged. The panel says so at the
+            top, because a tab full of prices invites being read as picks. */}
+        {navBtn('tds',         <Hand size={12} />,         'TDs')}
       </div>
 
     </header>
