@@ -264,7 +264,26 @@ def run_week(season: int, week: int, dry: bool) -> None:
         print("  --dry-run: nothing written")
         return
     if rows:
-        supabase.table("line_predictions").upsert(rows, on_conflict="game_id,bet_type").execute()
+        # The conflict target must name the index that actually exists. On
+        # 2026-10-08 line_predictions went from UNIQUE (game_id, bet_type) to
+        # UNIQUE (game_id, bet_type, model_version) so a corrected prediction
+        # could sit beside the one it corrects, and this call was left pointing
+        # at the old one: every run from then until 2026-10-12 died with
+        # "there is no unique or exclusion constraint matching the ON CONFLICT
+        # specification" AFTER printing the picks it had computed, so the logs
+        # looked like work being done. Week 7 was in the freeze window for four
+        # days and never got frozen.
+        #
+        # ignore_duplicates makes this ON CONFLICT DO NOTHING. The `already`
+        # check above is what normally keeps a frozen pick from being rewritten,
+        # but that is a read-then-write and nothing stops a second run slipping
+        # between the two. An upsert would silently overwrite the opener in that
+        # window, which is the one thing this table must never do; DO NOTHING
+        # makes the invariant a property of the write instead of a property of
+        # the control flow.
+        supabase.table("line_predictions").upsert(
+            rows, on_conflict="game_id,bet_type,model_version",
+            ignore_duplicates=True).execute()
         print(f"  wrote {len(rows)} predictions")
 
 

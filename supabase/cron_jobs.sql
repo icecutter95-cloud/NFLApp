@@ -117,3 +117,36 @@ select cron.alter_job(9, schedule => '0 * * * *');
 --
 -- line_frozen_at is min(predicted_at) across every version of that
 -- game-market, and pickAge() in ClvPanel.jsx now reads it. Week 5 renders 11d.
+
+-- clv_tracking / line_open_close performance, 2026-10-12
+-- ------------------------------------------------------
+-- Log CLV failed every run from 2026-10-08 to 2026-10-12. Two faults, and the
+-- second was hidden behind the first.
+--
+-- 1. The logger's upsert still named on_conflict="game_id,bet_type", the index
+--    dropped on 10-08 when line_predictions was versioned. Error 42P10, raised
+--    AFTER the picks had been printed, so the log looked like work being done.
+--    Week 7 sat in the freeze window for four days and was never frozen.
+--
+-- 2. With that fixed the summary read failed on 57014, statement timeout.
+--    EXPLAIN: 45,219 ms and 13.8 MILLION buffer hits. Not a missing index -- a
+--    row estimate. The planner guessed rows=1 from the DISTINCT ON over
+--    line_predictions (actual 214), chose a nested loop, and re-evaluated
+--    line_open_close -- a 41,395-row sort, twice -- with loops=214.
+--
+--    The join to the open/close block is on team pair plus a kickoff date
+--    range rather than game_id, deliberately: The Odds API re-issues an event
+--    id when a kickoff moves. A non-equijoin forces a nested loop, so the only
+--    safe lever was to stop the inner side being recomputed. Every CTE is now
+--    WITH ... AS MATERIALIZED, evaluated once. 45,219 ms -> 250 ms, loops=1,
+--    nested loops replaced by hash joins.
+--
+--    line_open_close was separately rewritten from two row_number() windows
+--    plus an array_agg identity CTE to three DISTINCT ON scans matching
+--    idx_line_history_game_recorded. Identical output, verified before and
+--    after: 272 rows, 272 with a close, sums -452.00 / -451.50 / 12369.00.
+--
+-- This had been creeping toward the timeout for weeks as the hourly odds cron
+-- grew line_history; movement_v2 doubling line_predictions pushed it over. The
+-- lesson is that an append-only table under an hourly writer makes any
+-- per-row-recomputed view a time bomb with a date on it.
