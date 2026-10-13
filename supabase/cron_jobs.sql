@@ -150,3 +150,33 @@ select cron.alter_job(9, schedule => '0 * * * *');
 -- grew line_history; movement_v2 doubling line_predictions pushed it over. The
 -- lesson is that an append-only table under an hourly writer makes any
 -- per-row-recomputed view a time bomb with a date on it.
+
+-- cfb_tracking performance: measured, and NOT changed, 2026-10-12
+-- ---------------------------------------------------------------
+-- After clv_tracking hit a 45-second nested loop I said cfb_tracking "takes
+-- 7.0s" and should get the same treatment. That number was wrong. It came from
+-- timing fetch_all() in a fresh Python process, so it included TLS handshake,
+-- client construction and module imports. Measured properly:
+--
+--   cfb_tracking   EXPLAIN ANALYZE 139 ms   |  raw REST 0.70s cold, 0.36s warm
+--   clv_tracking   EXPLAIN ANALYZE 250 ms   |  raw REST 0.42s
+--
+-- cfb_tracking was never near the timeout, and the reason is structural rather
+-- than lucky: it joins cfb_open_close on game_id, an EQUIJOIN, so the planner
+-- can pick a merge join. clv_tracking joins on team pair plus a kickoff date
+-- range -- because The Odds API re-issues NFL event ids when a kickoff moves --
+-- and a non-equijoin cannot merge-join, so a bad row estimate left it only
+-- nested loop. Same shape of view, different join, opposite outcome.
+--
+-- Deliberately not rewritten. The lesson of this week is that silent breakage
+-- comes from unmeasured assumptions, and "make the fast thing faster" is one.
+--
+-- ONE THING TO WATCH. The lineage CTE resolves each game's canonical event id
+-- with a correlated subquery, so SubPlan 2 runs once per game and scans the
+-- pair CTE each time -- quadratic in games. At 409 games it is 167k cheap
+-- comparisons and invisible. The row estimates are also badly off (planner
+-- 100,339 rows against 19,314 actual), which is precisely the condition that
+-- flipped clv_tracking. The protection is the equijoin, so if that join is ever
+-- changed to a pair-and-date form like the NFL one, this becomes the same bug.
+-- Re-measure with EXPLAIN ANALYZE, not a stopwatch in Python, if the CFB board
+-- passes roughly 1,500 games.
