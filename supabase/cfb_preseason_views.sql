@@ -193,3 +193,32 @@ create table if not exists public.preseason_results (
 --
 -- It cannot be backfilled. Section 4 of scripts/td_props_analysis.py can see
 -- no further back than 2026-10-08.
+
+-- cfb_predictions: 'total_shadow' market, 2026-10-16
+-- --------------------------------------------------
+-- College totals had been suppressed at the source since 2026-08-06: the 27
+-- rolling form features are hardcoded to zero at serve time and a total is a
+-- LEVEL rather than a difference, so the zeros do not cancel the way they do
+-- for spreads. The output is degenerate rather than weak -- on the live board
+-- it called 397 of 421 games UNDER, 94%.
+--
+-- Dropping the rows meant no record could ever accumulate, so "is it still
+-- broken?" had no answer. They are now logged under bet_type 'total_shadow',
+-- added to the CHECK constraint. That name cannot collide with a real row on
+-- (game_id, bet_type), is excluded by every consumer reading 'spread' or
+-- 'total', and is filtered out of CfbPanel explicitly -- the panel renders
+-- whatever cfb_tracking returns, so the board would otherwise have doubled.
+-- cfb_tracking grades them with no change: its CASE sends anything not
+-- 'spread' to closing_total and the over/under branch.
+--
+-- First grading, 325 of 421 already played, and it confirms the diagnosis
+-- rather than softening it:
+--
+--   model's unders        161-146  52.4%
+--   blind under at open   166-150  52.5%   <- identical
+--   model's overs            9-9   50.0%   (n=18, its only non-default calls)
+--
+-- The 52% is the season's under rate, not the model. Worth having measured
+-- rather than asserted, and worth re-running once in-season form exists: the
+-- gate in log_cfb_predictions is unchanged, so form_populated flipping turns
+-- these into ordinary 'total' rows with no further edit.

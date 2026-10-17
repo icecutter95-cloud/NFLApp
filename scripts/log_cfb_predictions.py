@@ -503,22 +503,36 @@ def main():
                     "taken_line": None if side is None else
                                   (float(line) if side == "home" else -float(line))})
             else:
-                # Withheld until teams have real form. Rolling features are zero
-                # in week 1 (see above), and a total is a LEVEL rather than a
-                # difference, so those zeros do not cancel the way they do for
-                # spreads -- they drag every prediction down. Measured on week-1
-                # training games the model calls over 12% of the time against a
-                # true rate of 38%, and on this live board it called 68 of 73
-                # games under. That is a broken output, not a weak edge, so it
-                # is suppressed at the source rather than deleted after the fact.
-                # Deleting rows by hand did not hold: the 3-hourly cron simply
-                # rewrote them.
+                # Totals are LOGGED but labelled, not withheld -- changed
+                # 2026-10-16 on request, so a record starts accruing.
+                #
+                # They were suppressed because the rolling form features are
+                # hardcoded to zero at serve time (see above) and a total is a
+                # LEVEL rather than a difference, so the zeros do not cancel the
+                # way they do for spreads. Measured on week-1 training games the
+                # model called over 12% of the time against a true rate of 38%,
+                # and on the live board it called 68 of 73 games under. That is
+                # a degenerate output, not a weak edge.
+                #
+                # Dropping the rows meant no record could ever accumulate, so
+                # the question "is it still broken?" had no answer. They now go
+                # in under bet_type 'total_shadow', which keeps them out of
+                # every consumer that reads 'spread' or 'total', cannot collide
+                # with a real row on the (game_id, bet_type) key, and is
+                # unmistakable in a query. cfb_tracking grades them correctly
+                # anyway: its CASE sends anything that is not 'spread' to
+                # closing_total and the over/under result branch.
+                #
+                # The gate is still the gate. The moment in-season form is wired
+                # in, form_populated flips and these become ordinary 'total'
+                # rows with no further change here -- which is the behaviour the
+                # original comment promised.
+                bet_type = "total" if form_populated else "total_shadow"
                 if not form_populated:
                     withheld += 1
-                    continue
                 side = "over" if pred[i] > 0 else "under"
                 rows.append({
-                    "game_id": g["game_id"], "bet_type": "total", "season": SEASON,
+                    "game_id": g["game_id"], "bet_type": bet_type, "season": SEASON,
                     "week": int(g["week"]) if pd.notna(g.get("week")) else None,
                     "home_team": g["home_team"], "away_team": g["away_team"],
                     "commence_time": g["commence_time"], "open_line": float(line),
@@ -539,8 +553,14 @@ def main():
         print(f"  {agree}/{ns} spreads have a side (movement and margin models "
               f"agree); {ns-agree} shown without a pick")
     if withheld:
-        print(f"  {withheld} totals withheld (rolling form all zero — "
-              f"a level-valued prediction cannot be trusted without it)")
+        sh = [r for r in rows if r["bet_type"] == "total_shadow"]
+        unders = sum(1 for r in sh if r["predicted_side"] == "under")
+        print(f"  {withheld} totals logged as 'total_shadow' (rolling form all "
+              f"zero — a level-valued prediction cannot be trusted without it)")
+        if sh:
+            print(f"    distribution: {unders} under / {len(sh) - unders} over "
+                  f"({unders / len(sh):.0%} under) — a healthy board is near "
+                  f"50/50, so this is the bias, measurable each run")
     # The side is decided by predicted_movement (which way the line is expected
     # to go), not by projected_value (the margin model's view of the game). Those
     # are two different models and they disagree often, so print the one that

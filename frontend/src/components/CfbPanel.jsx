@@ -112,8 +112,15 @@ export default function CfbPanel({ season }) {
     const PAGE = 1000
     let all = []
     for (let from = 0; ; from += PAGE) {
+      // total_shadow is excluded on purpose. College totals are logged from
+      // 2026-10-16 so a record can accrue, but the model is degenerate while
+      // its rolling form features are zero -- it called 397 of 421 games under
+      // -- so they are not a board anyone should look at. This panel renders
+      // whatever cfb_tracking returns, so without this filter the board would
+      // simply double in length with rows nobody should act on.
       const { data, error } = await supabase
         .from('cfb_tracking').select('*').eq('season', season)
+        .neq('bet_type', 'total_shadow')
         .order('commence_time').range(from, from + PAGE - 1)
       if (error || !data || data.length === 0) break
       all = all.concat(data)
@@ -310,8 +317,14 @@ export default function CfbPanel({ season }) {
           <span className="text-gray-300">Model margin</span> is what the model expects the home side to win
           by; <span className="text-gray-300">vs line</span> is how far that sits from the opener. Positive
           means it likes the home team more than the market does.
-          {' '}<span className="text-gray-400">Totals are not shown</span> — the model called 93% of week-1
-          games under against a true rate of 38%, so it is withheld until in-season form exists.
+          {' '}<span className="text-gray-400">Totals are logged but not shown.</span> The model calls
+          almost everything under — 397 of 421 games on the current board — because its rolling form
+          features are zero until in-season data is wired in, and a total is a level rather than a
+          difference, so those zeros do not cancel. Graded so far: its unders are 161-146 (52.4%)
+          against 166-150 (52.5%) for betting under blind at every opener, and its 18 overs are 9-9.
+          It is tracking the under rate, not the game. Kept under bet_type{' '}
+          <span className="text-gray-400">total_shadow</span> so the record accrues without pretending
+          to be a pick.
           <span className="block mt-1.5">
             Typical disagreement is <span className="text-gray-300">3.5 points</span>; anything past 10 is
             almost always a lopsided spread where the model has least to go on. Sorting by disagreement
