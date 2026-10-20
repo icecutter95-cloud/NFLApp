@@ -102,8 +102,11 @@ def fetch_preseason() -> pd.DataFrame:
     return out
 
 
-def fetch_drive_stats() -> pd.DataFrame:
+def fetch_drive_stats(seasons=None) -> pd.DataFrame:
     """Per-game field position and finishing, computed from drive logs.
+
+    `seasons` defaults to the training range; see fetch_games for why it is
+    parameterised.
 
     CFBD exposes fieldPosition and pointsPerOpportunity only as SEASON
     aggregates, which would carry the outcome of the game being predicted.
@@ -112,7 +115,7 @@ def fetch_drive_stats() -> pd.DataFrame:
     plus the mirror image conceded by its defence.
     """
     rows = []
-    for s in SEASONS:
+    for s in (SEASONS if seasons is None else seasons):
         for d in get("/drives", year=s, seasonType="regular"):
             off, dfn = cfbd_to_key(d.get("offense")), cfbd_to_key(d.get("defense"))
             gid, ytg = d.get("gameId"), d.get("startYardsToGoal")
@@ -174,9 +177,17 @@ def get(path, **params):
     return r.json()
 
 
-def fetch_games() -> pd.DataFrame:
+def fetch_games(seasons=None) -> pd.DataFrame:
+    """Schedule and results. `seasons` defaults to the training range.
+
+    Parameterised 2026-10-20 so scripts/fetch_cfb_form.py can build the CURRENT
+    season's rolling form with this exact code rather than a second copy of it.
+    Train/serve parity is the whole point: the live board had all 27 form
+    features hardcoded to zero, which the model reads as "week 1", and week-1
+    college games go under by 2.93 points on average.
+    """
     rows = []
-    for s in SEASONS:
+    for s in (SEASONS if seasons is None else seasons):
         for g in get("/games", year=s, seasonType="regular"):
             rows.append({
                 "game_id": g["id"], "season": s, "week": g["week"],
@@ -198,10 +209,14 @@ def fetch_games() -> pd.DataFrame:
     return df
 
 
-def fetch_team_games() -> pd.DataFrame:
-    """One row per team per game: their offensive and defensive efficiency."""
+def fetch_team_games(seasons=None) -> pd.DataFrame:
+    """One row per team per game: their offensive and defensive efficiency.
+
+    `seasons` defaults to the training range; see fetch_games for why it is
+    parameterised.
+    """
     rows = []
-    for s in SEASONS:
+    for s in (SEASONS if seasons is None else seasons):
         for r in get("/stats/game/advanced", year=s):
             # Postseason week numbers RESTART at 1, so a bowl game collides with
             # the same team's regular-season week 1 on (season, week, team).

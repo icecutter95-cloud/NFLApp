@@ -426,9 +426,42 @@ def main():
         a = games[f"{c}_away"] if f"{c}_away" in games else 0.0
         X[f"diff_{c}"] = pd.to_numeric(h, errors="coerce").fillna(0) - \
                          pd.to_numeric(a, errors="coerce").fillna(0)
+    # In-season form, from cfb_team_form (scripts/fetch_cfb_form.py).
+    #
+    # These were hardcoded to 0.0 from 2026-08-06 to 2026-10-20 on the belief
+    # that zero is neutral for a difference feature. It is not. Measured on the
+    # training frame, rows where all 27 form columns are zero carry a totals
+    # residual of -3.26 and go under 60.7% of the time, against +0.20 and 50.8%
+    # for rows with real form -- because in training, all-zero form IS a week-1
+    # game, and week-1 college games go under by 2.93 points on average. Served
+    # that input the totals model predicted -1.91 at a 38 total and -3.70 at
+    # 65, which is the right answer to the wrong question. Spreads were equally
+    # uninformed; being differences, they were just less obviously wrong.
+    #
+    # Column names are lowercased on the way out of the table: Postgres folds
+    # unquoted identifiers, so off_ppa_adj_L4 is stored as off_ppa_adj_l4. The
+    # writer lowercases to match; this is the other half of that mapping.
+    #
+    # A team with no row (an FCS opponent, or a board posted before the first
+    # form refresh of a season) falls back to 0.0 -- the same value as before,
+    # for the same honest reason: week 1 really has no in-season form.
+    form = {}
+    try:
+        for r in fetch_all("cfb_team_form", season=SEASON):
+            form[r["team"]] = r
+    except Exception as e:
+        print(f"  cfb_team_form unavailable ({type(e).__name__}) — form "
+              f"features fall back to zero, which the models read as week 1")
+    hit = sum(1 for t in games["home_team"] if t in form) +           sum(1 for t in games["away_team"] if t in form)
+    print(f"  form: {len(form)} teams on file, {hit}/{2 * len(games)} sides matched")
     for c in FEATURE_COLS:
-        X[f"diff_{c}"] = 0.0
-    X["diff_games_played"] = 0.0
+        lc = c.lower()
+        h = [float((form.get(t) or {}).get(lc) or 0.0) for t in games["home_team"]]
+        a = [float((form.get(t) or {}).get(lc) or 0.0) for t in games["away_team"]]
+        X[f"diff_{c}"] = np.asarray(h) - np.asarray(a)
+    gp = {t: float((form.get(t) or {}).get("games_played") or 0.0)
+          for t in set(games["home_team"]) | set(games["away_team"])}
+    X["diff_games_played"] = np.asarray([gp.get(t, 0.0) for t in games["home_team"]]) -                              np.asarray([gp.get(t, 0.0) for t in games["away_team"]])
     X["diff_rest_days"] = 0.0
     for c in ("neutral_site", "conference_game", "travel_miles",
               "elev_change", "is_dome"):
@@ -553,14 +586,19 @@ def main():
         print(f"  {agree}/{ns} spreads have a side (movement and margin models "
               f"agree); {ns-agree} shown without a pick")
     if withheld:
-        sh = [r for r in rows if r["bet_type"] == "total_shadow"]
-        unders = sum(1 for r in sh if r["predicted_side"] == "under")
         print(f"  {withheld} totals logged as 'total_shadow' (rolling form all "
               f"zero — a level-valued prediction cannot be trusted without it)")
-        if sh:
-            print(f"    distribution: {unders} under / {len(sh) - unders} over "
-                  f"({unders / len(sh):.0%} under) — a healthy board is near "
-                  f"50/50, so this is the bias, measurable each run")
+    # The over/under split, printed every run whether the totals are shadowed or
+    # not. This is the number that exposed the train/serve skew -- 94% under
+    # while form was zeroed -- so it is worth watching permanently rather than
+    # rediscovering. A healthy board sits near 50/50.
+    tot = [r for r in rows if r["bet_type"] in ("total", "total_shadow")]
+    if tot:
+        unders = sum(1 for r in tot if r["predicted_side"] == "under")
+        print(f"  totals split: {unders} under / {len(tot) - unders} over "
+              f"({unders / len(tot):.0%} under)"
+              + ("  <-- near 50/50 is healthy" if 0.35 <= unders / len(tot) <= 0.65
+                 else "  <-- LOPSIDED, check the form features"))
     # The side is decided by predicted_movement (which way the line is expected
     # to go), not by projected_value (the margin model's view of the game). Those
     # are two different models and they disagree often, so print the one that

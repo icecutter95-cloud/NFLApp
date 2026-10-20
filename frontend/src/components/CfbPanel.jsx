@@ -54,9 +54,18 @@ function sideDetail(r) {
   const disTeam = r.margin_disagreement == null ? null
                 : r.margin_disagreement > 0 ? r.home_team : r.away_team
   if (r.predicted_side) {
-    const team = r.predicted_side === 'home' ? r.home_team : r.away_team
-    // taken_line is already mirrored for the away side by the logger.
+    // A total's side is 'over'/'under', not a team. Falling through the
+    // home/away ternary rendered the AWAY TEAM as the pick on every totals row
+    // -- "KANSAS +56.5" where it meant "Over 56.5". Same shape of bug as the
+    // null-side case below, and it only surfaced when totals came back.
+    const isTotal = r.bet_type !== 'spread'
+    const team = isTotal
+      ? (r.predicted_side === 'over' ? 'Over' : 'Under')
+      : (r.predicted_side === 'home' ? r.home_team : r.away_team)
+    // taken_line is already mirrored for the away side by the logger; a total
+    // is quoted as one number, so over and under share it.
     const num = r.taken_line != null ? r.taken_line
+              : isTotal ? r.open_line
               : (r.predicted_side === 'home' ? r.open_line : -r.open_line)
     return { agree: true, team, num, mvTeam, disTeam }
   }
@@ -98,6 +107,10 @@ export default function CfbPanel({ season }) {
   // distribution whose median disagreement is only 3.5 points.
   const [sort, setSort] = useState('time')
   const [status, setStatus] = useState('upcoming')
+  // Spreads by default. Totals exist again as of 2026-10-20 -- see the note
+  // below -- but they are a separate market, not extra rows on the same board,
+  // so they get a switch rather than doubling the list.
+  const [market, setMarket] = useState('spread')
   const [week, setWeek] = useState('all')
   const [lean, setLean] = useState('all')
   const [query, setQuery] = useState('')
@@ -120,7 +133,7 @@ export default function CfbPanel({ season }) {
       // simply double in length with rows nobody should act on.
       const { data, error } = await supabase
         .from('cfb_tracking').select('*').eq('season', season)
-        .neq('bet_type', 'total_shadow')
+        .neq('bet_type', 'total_shadow')   // the broken-form record, see below
         .order('commence_time').range(from, from + PAGE - 1)
       if (error || !data || data.length === 0) break
       all = all.concat(data)
@@ -214,12 +227,17 @@ export default function CfbPanel({ season }) {
   // Friday/Saturday games as week 1, so week 1 here runs Aug 29 to Sep 7 and
   // covers both the openers and the following weekend. Played-vs-upcoming is
   // what actually separates the games already behind us.
+  // `market` belongs in the dependency array. Without it the memo kept serving
+  // spread rows after the switch, statusPool then filtered them to bet_type
+  // 'total', and the board went empty while the counts still read 83/375/458.
   const bucket = useMemo(() => ({
-    upcoming: rows.filter(r => r.home_score == null),
-    final: rows.filter(r => r.home_score != null),
-  }), [rows])
+    upcoming: rows.filter(r => r.home_score == null && r.bet_type === market),
+    final: rows.filter(r => r.home_score != null && r.bet_type === market),
+  }), [rows, market])
 
-  const statusPool = status === 'all' ? rows : bucket[status]
+  const statusPool = useMemo(() => (
+    (status === 'all' ? rows : bucket[status]).filter(r => r.bet_type === market)
+  ), [rows, bucket, status, market])
 
   // A "lean" is a game where the movement and margin models agree; the rule
   // declines the rest, so predicted_side is null on roughly a third of the
@@ -268,7 +286,7 @@ export default function CfbPanel({ season }) {
       s.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time))
     }
     return s
-  }, [pool, week, sort, status, query])
+  }, [pool, week, sort, status, query, market])
 
   if (loading) {
     return <div className="flex items-center justify-center h-48 text-gray-600 text-sm">Loading college football…</div>
@@ -317,14 +335,15 @@ export default function CfbPanel({ season }) {
           <span className="text-gray-300">Model margin</span> is what the model expects the home side to win
           by; <span className="text-gray-300">vs line</span> is how far that sits from the opener. Positive
           means it likes the home team more than the market does.
-          {' '}<span className="text-gray-400">Totals are logged but not shown.</span> The model calls
-          almost everything under — 397 of 421 games on the current board — because its rolling form
-          features are zero until in-season data is wired in, and a total is a level rather than a
-          difference, so those zeros do not cancel. Graded so far: its unders are 161-146 (52.4%)
-          against 166-150 (52.5%) for betting under blind at every opener, and its 18 overs are 9-9.
-          It is tracking the under rate, not the game. Kept under bet_type{' '}
-          <span className="text-gray-400">total_shadow</span> so the record accrues without pretending
-          to be a pick.
+          {' '}<span className="text-gray-400">Totals are back</span> as of 2026-10-20. They had been
+          calling 94% of games under — not a bias in the model but a lie in its inputs: all 27 rolling
+          form features were hardcoded to zero, and in training all-zero form <em>is</em> a week-1
+          game, which goes under by 2.93 points on average. Fed real in-season form the split is
+          45% under and the graded record is 182-193 (48.5%). That is a coin flip, not an edge — the
+          college totals model never cleared its own noise floor (p = 0.192) — so look, do not bet.
+          The old broken-form rows are kept under bet_type{' '}
+          <span className="text-gray-400">total_shadow</span> as the before picture: its unders went
+          161-146 against 166-150 for betting under blind.
           <span className="block mt-1.5">
             Typical disagreement is <span className="text-gray-300">3.5 points</span>; anything past 10 is
             almost always a lopsided spread where the model has least to go on. Sorting by disagreement
@@ -334,9 +353,22 @@ export default function CfbPanel({ season }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1 mr-1">
+          {[['spread', 'Spreads'], ['total', 'Totals']].map(([k, l]) => (
+            <button key={k} onClick={() => { setMarket(k); setWeek('all'); setLean('all') }}
+              title={k === 'total'
+                ? 'Restored 2026-10-20 once in-season form was wired in. Was 94% under while the form features were zeroed.'
+                : 'Spread projections'}
+              className={`px-2 py-1.5 text-xs rounded border transition-colors ${
+                market === k ? 'border-sky-700 text-sky-200 bg-sky-950/40'
+                             : 'border-gray-800 text-gray-500 hover:text-gray-300'}`}>
+              {l}
+            </button>
+          ))}
+        </div>
         {[['upcoming', `Upcoming ${bucket.upcoming.length}`],
           ['final', `Final ${bucket.final.length}`],
-          ['all', `All ${rows.length}`]].map(([k, l]) => (
+          ['all', `All ${rows.filter(r => r.bet_type === market).length}`]].map(([k, l]) => (
           <button key={k} onClick={() => { setStatus(k); setWeek('all'); setLean('all') }}
             className={`px-2 py-1.5 text-xs rounded border transition-colors ${
               status === k ? 'border-gray-500 text-gray-200 bg-gray-800'
@@ -486,6 +518,8 @@ export default function CfbPanel({ season }) {
             // ways, which is the tested rule declining to pick. Ternary on
             // 'home' alone would silently render the AWAY team as the pick.
             const side = r.predicted_side == null ? null
+                       : r.bet_type !== 'spread'
+                         ? (r.predicted_side === 'over' ? 'Over' : 'Under')
                        : r.predicted_side === 'home' ? r.home_team : r.away_team
             const dis = r.margin_disagreement
             const sig = signals[key]

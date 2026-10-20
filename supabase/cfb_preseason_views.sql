@@ -222,3 +222,47 @@ create table if not exists public.preseason_results (
 -- rather than asserted, and worth re-running once in-season form exists: the
 -- gate in log_cfb_predictions is unchanged, so form_populated flipping turns
 -- these into ordinary 'total' rows with no further edit.
+
+-- cfb_team_form, applied 2026-10-20: the under bias was a lie in the inputs
+-- ----------------------------------------------------------------------
+-- log_cfb_predictions hardcoded all 27 rolling form features to 0.0 at serve
+-- time from 2026-08-06. The totals model then called 94% of games under, and
+-- the explanation on file was "a total is a LEVEL rather than a difference, so
+-- the zeros do not cancel". That was wrong, and it cost two months.
+--
+-- Measured on the training frame:
+--   rows with all form zero (272, mostly weeks 1-2)  residual -3.26, 60.7% under
+--   rows with real form (3,327)                      residual +0.20, 50.8% under
+--   by week: 1 -2.93 | 2 -1.81 | 3 -0.13 | 4 +1.97
+-- Overall residual mean is -0.06 (51.6% under) -- the market is efficient at
+-- the opener. Served all-zero form the model predicted -1.91 at a 38 total and
+-- -3.70 at 65, which is the CORRECT answer for a week-1 game. Zero is not a
+-- neutral input: in training it means "no games played yet".
+--
+-- Fix: compute the form. cfb_team_form holds one row per team per season,
+-- written by scripts/fetch_cfb_form.py, which imports fetch_team_games,
+-- fetch_drive_stats, fetch_games and add_form from build_cfb_dataset -- the
+-- training code itself, so serve-time numbers cannot drift from trained ones.
+-- Form "as of now" comes from appending one synthetic future row per team:
+-- add_form shifts every window back a game, so that row receives the mean of
+-- the team's last 4 and last 8 actual games.
+--
+-- Cost: three CFBD calls (/stats/game/advanced, /drives, /games -- one year
+-- each) against a monthly quota near 1,000. The belief that in-season form was
+-- quota-prohibitive, which is why this waited from August to October, was
+-- never tested.
+--
+-- Result: 136 teams, 916/916 sides matched, and the totals split went from
+-- 94% under to 45% under. Graded form-aware totals are 182-193 (48.5%) -- a
+-- coin flip, which is the honest outcome for a model that never cleared its
+-- own noise floor (p = 0.192). Spreads were equally uninformed and are now
+-- form-aware too.
+--
+-- Two notes for whoever reads this next:
+--   * Postgres folds unquoted identifiers, so off_ppa_adj_L4 is stored as
+--     off_ppa_adj_l4. The writer lowercases and the reader lowercases; that
+--     mapping lives in exactly two commented places.
+--   * cfb_predictions upserts rather than versions, so this restated every
+--     historical CFB prediction with form-aware numbers -- 1,451 'changed'
+--     rows in cfb_prediction_log, which is that log doing its job. The old
+--     zero-form totals are preserved separately as bet_type 'total_shadow'.
