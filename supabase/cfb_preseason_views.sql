@@ -266,3 +266,50 @@ create table if not exists public.preseason_results (
 --     historical CFB prediction with form-aware numbers -- 1,451 'changed'
 --     rows in cfb_prediction_log, which is that log doing its job. The old
 --     zero-form totals are preserved separately as bet_type 'total_shadow'.
+
+-- Two CFB data faults found 2026-10-22
+-- ------------------------------------
+-- 1. STALE OPENERS. log_cfb_predictions took the first snapshot EVER recorded
+--    as a game's opener. College boards post lookahead numbers months out, so
+--    111 of 469 games (80 played, 31 upcoming) had an "opener" more than 10
+--    days before kickoff. TEXAS_AM @ ALABAMA: -2.5 from September 1 against a
+--    real weekly open of -15.5 on October 15, and its first three snapshots
+--    that day were -2.5, -3.5, -10.0 -- a futures number being discovered.
+--    Median gap across the 84 affected games with a weekly line is 0.75pts,
+--    but 13 are off by 3+ and five by 7+.
+--
+--    fetch_cfb_lines.py has built the TRAINING set with
+--    WEEKLY_OPEN_WINDOW_DAYS = 10 from the beginning -- "snapshots inside this
+--    window represent the actionable weekly opener, not a lookahead number
+--    posted months out" -- so this was another train/serve mismatch, the same
+--    shape as the zeroed form features. The logger now applies the same rule,
+--    and a game with no snapshot inside the window is SKIPPED rather than
+--    predicted against a futures price; it joins the board when its week
+--    arrives. cfb_open_close's own open_* columns are left alone and merely
+--    documented, since nothing downstream reads them.
+--
+-- 2. FINISHED GAMES WERE BEING REWRITTEN. cfb_predictions upserts on
+--    (game_id, bet_type), so the 3-hourly job regenerated every past game with
+--    the current day's inputs. Harmless while inputs were static; outright
+--    look-ahead once in-season form landed on 2026-10-20, because a week-3
+--    game was then predicted from form containing its own result.
+--
+--    Measured: 381 finished games re-stamped after kickoff, 158 with a CHANGED
+--    SIDE. Not a timestamp artefact -- cfb_prediction_log writes only on a
+--    value change. JAMES_MADISON @ OLD_DOMINION (2026-09-26) read home/-2.71
+--    before kickoff and away/-10.78 after.
+--
+--    The logger now refuses to touch a game that has kicked off, and
+--    scripts/restore_cfb_prekickoff.py put 224 rows back to their last
+--    pre-kickoff logged values, 158 of them restoring the side.
+--
+--    860 finished game-markets have NO pre-kickoff log entry -- the log only
+--    began 2026-09-25 -- and cannot be repaired. They must be excluded from any
+--    record until re-derived point-in-time, the way NFL weeks 1-6 were for
+--    movement_v2.
+--
+--    What that does to the numbers, which is the point of all of this:
+--      verified pre-kickoff   87-78  52.7%  (p=0.53)
+--      cannot verify          57-32  64.0%  (p=0.01)
+--    The games we can prove were untouched are a coin flip; the ones we cannot
+--    verify look excellent. That gap IS the look-ahead.

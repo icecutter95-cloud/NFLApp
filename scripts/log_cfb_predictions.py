@@ -61,6 +61,10 @@ API = "https://api.collegefootballdata.com"
 HDRS = {"Authorization": f"Bearer {os.environ['CFBD_API_KEY']}"}
 SEASON = 2026
 PRIOR = SEASON - 1
+# Same definition training uses (scripts/fetch_cfb_lines.py) and the NFL side
+# uses: a snapshot inside this window is the actionable weekly opener rather
+# than a lookahead number posted months out.
+WEEKLY_OPEN_WINDOW_DAYS = 10
 
 
 # Every CFBD endpoint below returns data that is fixed for the season: final
@@ -360,8 +364,41 @@ def main():
         print("No rows in cfb_line_history — run fetch_cfb_odds.py first")
         return
     lines["ct"] = pd.to_datetime(lines["commence_time"], utc=True)
-    games = (lines.sort_values("recorded_at")
-             .groupby(["home_team", "away_team"], as_index=False).first())
+
+    # The opener is the first snapshot INSIDE THE WEEKLY WINDOW, not the first
+    # one ever recorded.
+    #
+    # fetch_cfb_lines.py has built the training set this way from the start --
+    # WEEKLY_OPEN_WINDOW_DAYS = 10, "snapshots inside this window represent the
+    # actionable weekly opener, not a lookahead number posted months out" --
+    # and this script ignored the rule, taking .first() over all of history.
+    # Another train/serve mismatch, the same shape as the zeroed form features.
+    #
+    # The cost was not theoretical. 111 of 469 games had their "opener" set
+    # more than 10 days out; TEXAS_AM @ ALABAMA stored -2.5 from September 1
+    # against a real weekly open of -15.5 on October 15, a 13-point error, and
+    # its first three snapshots that day were -2.5, -3.5, -10.0 -- a futures
+    # number being discovered in real time. Median error across the 84 affected
+    # games with a weekly line is 0.75 points, but 13 are off by 3+ and 5 by 7+.
+    #
+    # Falls back to the earliest snapshot when nothing lands inside the window,
+    # which is the honest answer for a game whose board posted late.
+    lines["lead_days"] = (lines["ct"] - pd.to_datetime(
+        lines["recorded_at"], utc=True)).dt.total_seconds() / 86400
+    lines = lines.sort_values("recorded_at")
+    weekly = lines[lines["lead_days"] <= WEEKLY_OPEN_WINDOW_DAYS]
+    games = weekly.groupby(["home_team", "away_team"], as_index=False).first()
+    skipped_early = (lines.groupby(["home_team", "away_team"]).ngroups
+                     - games.groupby(["home_team", "away_team"]).ngroups)
+    if skipped_early:
+        # A game whose board has not posted inside the window has no actionable
+        # opener, only a futures number. Predicting against it is the exact bug
+        # being fixed, so the game waits -- it joins the board when its week
+        # arrives, and nothing is lost because the rows are rewritten until
+        # kickoff anyway.
+        print(f"  {skipped_early} game(s) not yet inside the "
+              f"{WEEKLY_OPEN_WINDOW_DAYS}-day window — no actionable opener, "
+              f"skipped until their board posts")
 
     # One row per GAME, not per orientation. A neutral-site game can arrive with
     # its home and away sides swapped partway through -- OKLAHOMA @ TEXAS did
@@ -379,7 +416,28 @@ def main():
              .drop(columns="n").reset_index(drop=True))
     if before != len(games):
         print(f"  collapsed {before - len(games)} flipped-orientation duplicate(s)")
-    print(f"CFB: {len(games)} games with a line")
+    # Never re-predict a game that has already kicked off.
+    #
+    # cfb_predictions upserts on (game_id, bet_type), so every 3-hourly run
+    # rewrote every finished game with TODAY's inputs. After in-season form was
+    # wired in on 2026-10-20 that became outright look-ahead: a week-3 game was
+    # being predicted from form that includes its own result and everything
+    # since. Measured before this guard: 381 finished games re-stamped after
+    # kickoff and 158 of them changed side, which makes any record graded from
+    # this table meaningless -- it is the model marking its own homework.
+    #
+    # The pre-kickoff predictions survive in cfb_prediction_log, which is what
+    # that table was built for.
+    now_ts = pd.Timestamp.now(tz="UTC")
+    before_kick = len(games)
+    games = games[games["ct"] > now_ts].reset_index(drop=True)
+    if before_kick != len(games):
+        print(f"  {before_kick - len(games)} finished game(s) left alone "
+              f"(frozen predictions are not rewritten)")
+    if games.empty:
+        print("  no upcoming games on the board")
+        return
+    print(f"CFB: {len(games)} upcoming games with a line")
 
     # A quota outage with nothing cached is an external condition, not a code
     # fault, and it self-heals when the allowance resets. Exit cleanly so the
