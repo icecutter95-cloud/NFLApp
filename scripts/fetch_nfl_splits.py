@@ -66,11 +66,25 @@ def main():
         print(f"Action Network NFL: {len(games)} games, page {age}s old "
               f"(generated ~{observed.isoformat()[:19]}Z)")
 
+    # One entry per (game, market), not per model VERSION.
+    #
+    # line_predictions became versioned on 2026-10-08 -- movement_v1 alongside
+    # movement_v2 for weeks 1-6 -- so a pair in those weeks now returns two rows
+    # per market and the uniqueness assert below would fire. It has not fired
+    # only because this script looks at the current and next week, which carry
+    # v2 alone. The identical oversight on the college side (totals adding a
+    # second row per game) killed CFB splits collection for five days without
+    # failing the workflow, so the latent version is worth closing now rather
+    # than discovering in January when a backfill reaches week 3.
     board = (supabase.table("line_predictions")
              .select("game_id, bet_type, home_team, away_team, commence_time")
              .execute().data or [])
-    by_key = {}
+    by_key, seen = {}, set()
     for b in board:
+        k = (b["game_id"], b["bet_type"])
+        if k in seen:
+            continue
+        seen.add(k)
         by_key.setdefault((b["home_team"], b["away_team"], b["bet_type"]), []).append(b)
     print(f"board: {len({b['game_id'] for b in board})} games")
 
@@ -93,7 +107,11 @@ def main():
             if not hit:
                 unmatched.append(f"{away} @ {home} {market} (date)")
                 continue
-            assert len(hit) == 1, f"{away} @ {home} {market} matched {len(hit)} board rows"
+            if len(hit) != 1:
+                # Skip the game, keep the slate. An assert here loses every
+                # other game's splits over one ambiguous pair.
+                unmatched.append(f"{away} @ {home} {market} ({len(hit)} rows)")
+                continue
             rows.append({"game_id": hit[0]["game_id"], "bet_type": market,
                          "captured_at": observed.isoformat(),
                          "source": f"action_network:{CONSENSUS_BOOK}",

@@ -140,15 +140,33 @@ def main():
             games = games + nxt
             print(f"  + week {week + 1}: {len(nxt)} games ({nage}s old)")
 
+    # One entry per GAME, not per market row.
+    #
+    # cfb_predictions holds a row per (game_id, bet_type). Until 2026-10-16 the
+    # only market was 'spread', so a game appeared once and the uniqueness
+    # assert below held. Logging totals gave every game two or three rows, the
+    # assert started firing on the first game it reached, and CFB splits
+    # collection died silently from 2026-10-17 -- silently because each league
+    # is a continue-on-error step, so the workflow kept reporting success while
+    # writing nothing for college. NFL splits were unaffected and kept landing,
+    # which is why "the scraper stopped" was the wrong diagnosis.
+    #
+    # Deduped on game_id rather than filtered to bet_type='spread': a game with
+    # a total but no spread would otherwise vanish from the match instead of
+    # raising, and silence is the failure mode this whole file is trying to
+    # avoid.
     board = (supabase.table("cfb_predictions")
              .select("game_id, home_team, away_team, commence_time")
              .execute().data or [])
-    by_pair = {}
+    by_pair, seen = {}, set()
     for g in board:
+        if g["game_id"] in seen:
+            continue
+        seen.add(g["game_id"])
         by_pair.setdefault((g["home_team"], g["away_team"]), []).append(g)
-    print(f"board: {len({g['game_id'] for g in board})} games")
+    print(f"board: {len(seen)} games")
 
-    rows, matched, skipped_fcs = [], set(), 0
+    rows, matched, skipped_fcs, ambiguous = [], set(), 0, []
     for g in games:
         tm = {t["id"]: t for t in g["teams"]}
         home = team_key(tm.get(g.get("home_team_id")) or {})
@@ -164,7 +182,14 @@ def main():
                if abs((datetime.fromisoformat(c["commence_time"]).date() - kick).days) <= 1]
         if not hit:
             continue
-        assert len(hit) == 1, f"{away} @ {home} matched {len(hit)} board games"
+        if len(hit) != 1:
+            # Two DISTINCT games for one pair inside a day means a genuine
+            # ambiguity -- a doubleheader that cannot happen, or duplicate board
+            # entries. Skip the game and say so; an assert here takes the whole
+            # slate down over one row, which is how five days of college splits
+            # were lost.
+            ambiguous.append(f"{away} @ {home} ({len(hit)} board games)")
+            continue
         gid = hit[0]["game_id"]
 
         for bid in (want or {CONSENSUS_BOOK}):
@@ -178,6 +203,8 @@ def main():
 
     print(f"  {len(matched)} board games matched, {len(rows)} split rows "
           f"({skipped_fcs} non-FBS games skipped)")
+    if ambiguous:
+        print(f"  {len(ambiguous)} ambiguous, skipped: {', '.join(ambiguous[:4])}")
     if not rows:
         print("  nothing to write")
         return
