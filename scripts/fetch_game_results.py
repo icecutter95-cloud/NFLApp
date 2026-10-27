@@ -17,7 +17,10 @@ already and cost weeks, so the flip happens here, once, explicitly:
     closing_spread_home = -spread_line
 
 `assert_result_conventions` then refuses to write if the stored numbers do not
-behave like real spreads.
+behave like real spreads. Its primary test is the SIGN CORRELATION, which must
+be strongly negative; the cover-rate test is secondary and scales with the
+sample, after a fixed 44-56% band blocked grading on 2026-10-27 over a 41.6%
+rate whose binomial p was 0.111.
 
 Usage:
     python fetch_game_results.py              # current season
@@ -30,6 +33,7 @@ import sys
 import warnings
 import numpy as np
 import pandas as pd
+from scipy.stats import binomtest
 import nfl_data_py as nfl
 
 warnings.filterwarnings("ignore")
@@ -57,15 +61,38 @@ def assert_result_conventions(df: pd.DataFrame):
             "A correctly-signed spread is strongly NEGATIVE here. The sign is flipped."
         )
 
+    # The cover rate is a SECONDARY check and its threshold now scales with the
+    # sample, because a fixed 44-56% band is only +/-1.2 standard deviations at
+    # a half-season and fires on clean data roughly one year in five.
+    #
+    # It fired on 2026-10-27 at 41.6% (42 of 101), binomial p = 0.111 against
+    # 50% -- ordinary variance, not a fault. The abort happens before any
+    # insert, so week 7 went ungraded: fourteen games including the Cowboys
+    # at Eagles Monday nighter, held back by a guard that was right in spirit
+    # and wrong in calibration.
+    #
+    # A genuinely flipped sign does not produce a mildly low rate. Adding a
+    # home favourite's spread with the wrong sign makes it "cover" whenever it
+    # loses by less than the number, pushing the rate far toward 100% AND
+    # flipping the correlation above positive -- which the check above already
+    # catches, and which is the real detector. So this one only needs to catch
+    # the extreme, and a binomial test does that without punishing a season in
+    # which home teams genuinely underperform.
     surplus = d["home_margin"] + d["closing_spread_home"]
     live = surplus[surplus.abs() > 1e-9]
-    rate = float((live > 0).mean()) * 100
-    if not 44 <= rate <= 56:
+    covers = int((live > 0).sum())
+    n = int(len(live))
+    rate = covers / n * 100 if n else float("nan")
+    p = binomtest(covers, n).pvalue if n else 1.0
+    if p < 0.001:
         raise SystemExit(
-            f"ABORT: home teams cover {rate:.1f}% of the time. Expected 44-56%; "
+            f"ABORT: home teams cover {covers}/{n} = {rate:.1f}% "
+            f"(binomial p = {p:.2g} against 50%). That is far beyond variance; "
             "something is wrong with the lines or the scores."
         )
-    print(f"  convention check OK (corr {corr:+.3f}, home covers {rate:.1f}%)")
+    note = "" if p >= 0.05 else f" -- unusual but within variance (p = {p:.3f})"
+    print(f"  convention check OK (corr {corr:+.3f}, home covers "
+          f"{rate:.1f}% of {n}{note})")
 
 
 def build(seasons: list) -> pd.DataFrame:
