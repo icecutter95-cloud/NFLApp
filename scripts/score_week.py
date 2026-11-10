@@ -625,9 +625,11 @@ def fetch_public_betting(team_pairs: list) -> dict:
     seeing, but on the 14 graded games where it fired the model was on the
     sharp side in 7 and went 8-6, which is no basis for moving a tier.
     """
-    board = (supabase.table("line_predictions")
-             .select("game_id, home_team, away_team, commence_time")
-             .execute().data or [])
+    # fetch_all rather than a bare select, for the reason given in
+    # fetch_nfl_splits: the same line on the college side was dropping 58
+    # games. A no-op at today's 512 rows.
+    board = fetch_all("line_predictions",
+                      "game_id, home_team, away_team, commence_time")
     pair_of = {b["game_id"]: (b["home_team"], b["away_team"]) for b in board}
     kick_of = {b["game_id"]: b["commence_time"] for b in board}
 

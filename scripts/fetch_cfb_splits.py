@@ -78,7 +78,7 @@ from action_splits import (fetch_current, fetch_week, outcomes, kickoff,
                            CONSENSUS_BOOK)
 from cfb_teams import to_key, cfbd_to_key
 from config import CURRENT_SEASON as SEASON
-from score_week import supabase
+from score_week import supabase, fetch_all
 
 URL = "https://www.actionnetwork.com/ncaaf/public-betting"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -155,9 +155,15 @@ def main():
     # a total but no spread would otherwise vanish from the match instead of
     # raising, and silence is the failure mode this whole file is trying to
     # avoid.
-    board = (supabase.table("cfb_predictions")
-             .select("game_id, home_team, away_team, commence_time")
-             .execute().data or [])
+    # fetch_all, NOT a bare .select(): cfb_predictions is a row per
+    # (game_id, bet_type), so it passed PostgREST's 1000-row cap once totals
+    # were logged. Measured 2026-11-10 -- 1,000 of 1,708 rows came back and 58
+    # games were invisible to the matcher, among them all three of that night's
+    # MAC games, whose percentages were live on the feed at the time. The games
+    # that DID match were later kickoffs, so nothing about the gap looked
+    # chronological and it read like a team-name problem instead.
+    board = fetch_all("cfb_predictions",
+                      "game_id, home_team, away_team, commence_time")
     by_pair, seen = {}, set()
     for g in board:
         if g["game_id"] in seen:
@@ -205,6 +211,23 @@ def main():
           f"({skipped_fcs} non-FBS games skipped)")
     if ambiguous:
         print(f"  {len(ambiguous)} ambiguous, skipped: {', '.join(ambiguous[:4])}")
+
+    # Coverage on the games being bet SOONEST. A total row count says nothing
+    # about whether the next slate is covered: on 2026-11-10 this printed 29
+    # matched games and looked healthy while every game kicking that night was
+    # missing, because the truncated board happened to retain later kickoffs.
+    # Imminent games with no splits are the only number worth alarming on.
+    soon = datetime.now(timezone.utc) + timedelta(hours=36)
+    upcoming = {g["game_id"] for g in board
+                if datetime.now(timezone.utc)
+                < datetime.fromisoformat(g["commence_time"]) < soon}
+    gap = upcoming - matched
+    if upcoming:
+        print(f"  next 36h: {len(upcoming) - len(gap)}/{len(upcoming)} "
+              f"board games have splits")
+    if gap:
+        print(f"  WARNING: {len(gap)} game(s) kicking within 36h got no "
+              f"splits: {', '.join(sorted(gap)[:6])}")
     if not rows:
         print("  nothing to write")
         return

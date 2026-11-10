@@ -33,7 +33,7 @@ warnings.filterwarnings("ignore")
 
 from action_splits import fetch, fetch_week, outcomes, kickoff, CONSENSUS_BOOK
 from config import CURRENT_SEASON as SEASON
-from score_week import supabase
+from score_week import supabase, fetch_all
 
 # The only abbreviation Action Network spells differently to us.
 FIX = {"JAC": "JAX"}
@@ -76,9 +76,12 @@ def main():
     # second row per game) killed CFB splits collection for five days without
     # failing the workflow, so the latent version is worth closing now rather
     # than discovering in January when a backfill reaches week 3.
-    board = (supabase.table("line_predictions")
-             .select("game_id, bet_type, home_team, away_team, commence_time")
-             .execute().data or [])
+    # Closed 2026-11-10, when the college equivalent of this exact line was
+    # found dropping 58 games. A no-op at today's 512 rows -- fetch_all and the
+    # bare select return the same set, verified -- which is the only reason it
+    # is safe to touch the NFL path for it.
+    board = fetch_all("line_predictions",
+                      "game_id, bet_type, home_team, away_team, commence_time")
     by_key, seen = {}, set()
     for b in board:
         k = (b["game_id"], b["bet_type"])
