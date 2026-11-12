@@ -33,6 +33,17 @@ was frozen against -- not necessarily the number that got bet. ROI assumes -110
 on every side, so it is a floor for anyone shopping for a better price and a
 ceiling for anyone taking -115. Break-even at -110 is 52.38%.
 
+READ bet_time_gate.py BEFORE QUOTING ANY NFL NUMBER FROM HERE. That caveat is
+far larger than it sounds. From week 7 the NFL opener has been a lookahead
+price 43-71 days before kickoff, and regraded at a line actually on offer six
+days out the gated record falls from 12-4 (75%) to 9-4 (69%) and rule 1 from
+57% to 52%.
+
+The college side is much less exposed but not clean: cfb_open_close openers
+average 13.7 days before kickoff against the NFL's 43-71 from week 7, and 47
+of 632 (7.4%) are more than 45 days stale. Whether the CFB gated record leans
+on that 7.4% has NOT been measured and is the obvious next check.
+
 Usage:
     python scripts/season_record.py
     python scripts/season_record.py --league nfl

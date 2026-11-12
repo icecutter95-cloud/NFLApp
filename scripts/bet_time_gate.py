@@ -1,77 +1,84 @@
 """
-Is rule 1 usable at BET time? Yes -- and it is cheaper than it looks.
+What is the record at a price that was actually available? Not the opener.
 
-THE QUESTION
-nfl_threshold_sweep.py asked whether the gates can be loosened for volume and
-concluded no. This file asks the prior question, which nearly killed the whole
-idea: whether rule 1 can be applied before a bet is placed at all.
-clv_points is open -> CLOSING line, the close is the kickoff number, and the
-75% was graded at the OPENER -- a price obtainable only by betting early. The
-worry was that "bet the opener" and "gate on movement" are mutually exclusive.
+THE CORRECTION THIS FILE EXISTS TO MAKE
+Every NFL number published before it -- the 75% gated record, the 12-4, the
+50% season -- is graded at open_line. That is a lookahead price: measured
+2026-11-12, the opener was same-day through week 4 and has been 43 to 71 days
+stale since week 7, because the model freezes a pick ~13 days out while the
+odds feed carries no line for that game until ~10 days out. The user does not
+bet lookahead lines ("a week away, 6 days away, absolutely, but not
+necessarily that far away"), so the opener is not a price, it is a scoring
+convention. Everything here is therefore regraded at the line on offer 7, 6,
+5, 3, 2 and 1 days before kickoff. All 88 graded picks have a line at every
+one of those horizons.
 
-WHAT IT FOUND (2026-11-12)
-They are not, because the movement finishes long before kickoff:
+THE RECORD AT A REAL PRICE
+                         all picks         rule 1       both rules
+    the OPENER        44-44  50% (88)   17-13 57% (30)  12-4 75% (16)
+    T-168h (7d)       43-43  50% (86)   14-13 52% (27)   7-4 64% (11)
+    T-144h (6d)       43-43  50% (86)   14-13 52% (27)   9-4 69% (13)
+    T-72h  (3d)       41-46  47% (87)   13-14 48% (27)  10-5 67% (15)
+    T-24h  (1d)       40-46  47% (86)   14-14 50% (28)  11-5 69% (16)
 
-    at        have line   mean move   share of final   corr w/ final
-    T-48h          88       +0.39          94%             0.97
-    T-24h          88       +0.37          98%             0.98
-    T-3h           88       +0.38          99%             0.99
-    close          88       +0.40         100%             1.00
+The ungated set barely moves: ~50% at the opener, ~47-50% at every real
+price. What collapses is the gate. Rule 1 goes 57% -> 52%, and both rules
+75% -> 64-69% on fewer picks.
 
-94% of it is in place two days out. The pick freezing a median 320 hours
-before kickoff (clv_tracking.line_frozen_at) turned out to be irrelevant --
-nothing forces the bet to be placed when the pick is generated.
+WHERE THE GATE'S EDGE ACTUALLY LIVES
+Split by opener staleness, graded at T-144h:
 
-The gate fires on the SAME 16 picks at every horizon from T-48h to T-3h. What
-waiting costs is the price, not the signal:
+                       all picks        rule 1        both rules
+    fresh  (7d avg)  31-32 49% (63)   6-9  40% (15)  4-3 57% (7)
+    stale (53d avg)  12-11 52% (23)   8-4  67% (12)  5-1 83% (6)
 
-    gated 16, graded at the opener        12-4   75.0%
-    gated 16, graded at the real T-48h    11-5   68.8%
-    average number surrendered by waiting        3.44 pts
+    fresh openers: mean CLV -0.02, mean move by T-144h +0.08
+    stale openers: mean CLV +1.57, mean move by T-144h +1.61
 
-So one win, and ~3.4 points of line value. Which makes the operable question a
-staking question, and there are three answers, priced on 2026's 88 picks:
+Rule 1 does nothing on a fresh opener -- 6-9 at a real price. Its whole record
+is the stale half. And the stale half's CLV is not the model beating the
+market: +1.57 of CLV against +1.61 already in the line by T-144h means the
+entire lookahead correction has happened before the bet is placed. The gate is
+largely a detector of "this pick was priced against a stale number".
 
-    A  flat 1u on all 88 at the opener                       -4.0u  (50.0%)
-    B  wait to T-48h on everything, 1u all + 0.5u on gated   -6.2u  (47.1%)
-    C  1u all at the OPENER + 0.5u top-up at T-48h on gated  -1.5u
+That matters more each week, because from week 7 every pick is in the stale
+regime. The gated stale subset is still 5-1 at a real price, which is either
+something real or six games.
 
-C wins and B is the trap. Waiting on everything to gain the right to size 16
-picks degrades all 88 -- 50.0% -> 47.1% -- and pays for the privilege. Taking
-the base unit early and topping up only the gated increment keeps the opener
-on every pick and pays the worse number on 0.5u of 16 bets. All three are
-negative here because 2026 is a 50% season; the ORDERING is the finding.
+WHAT THIS INVERTS
+The earlier recommendation here was: bet all 88 flat at the opener, top up the
+gated ones. At real prices that is wrong, because the ungated base is ~50% --
+below the 52.38% break-even -- so the flat base loses money and the gate stops
+being a refinement and becomes the only part with a positive record. At
+T-144h: flat 1u on all 88 is -3.9u, adding a 0.5u top-up is -1.8u, and the 13
+gated picks alone are +4.2u. The thin thing being leaned on is 11-16 picks,
+the same cell nfl_threshold_sweep.py priced at p=0.048.
 
-WHAT THIS DOES NOT SHOW
-That the gate is real. The 16 picks are the same cell the permutation test in
-nfl_threshold_sweep.py priced at p=0.048, re-graded at a different number.
-This file measures whether the gate is OPERABLE. Whether it is TRUE is still
-answered only by the out-of-sample movement sweep, which says no.
+A LIMIT WORTH STATING
+The 2023-25 holdout that reported 55.6% is also graded at openers, and
+movement_history stores only the open and the close -- no intermediate lines
+-- so it cannot be regraded this way. The one out-of-sample number available
+is measured on the convention this file just discredited.
 
-THE JOIN, AND TWO TRAPS IN IT
+THE JOIN, AND THREE TRAPS IN IT
 line_history is keyed on odds-API hashes and clv_tracking on 2026_1_TB_CIN
 synthetic keys -- zero overlap, which is why none of this had been measured.
-Matched on (home_team, away_team) instead, which is unique per NFL season.
+Matched on (home_team, away_team), unique per NFL season.
 
 1. An exact kickoff-DATE join dropped 20 of 78 pick-games, every one a Sunday
    or Monday night game: 8:20pm ET is the next day in UTC and the two tables
    do not render it the same way. A systematic loss of the most heavily bet
    slate, not a random 26%.
-2. line_history.commence_time DRIFTS. GB-CHI carries four values for one game
-   (17:00, 17:03:41, 17:05:00, and an earlier-scheduled 20:25); 136 of 272
-   pairs do this. Cutting a horizon against a kickoff wrong by 3.5 hours
-   silently changes which snapshot is "the line at T-3h", so every cut here
-   is taken against clv_tracking's commence_time and line_history's is never
-   used as the kickoff.
-
-It also keeps recording THROUGH kickoff -- some games' last snapshot is hours
-after it, a live in-game number that encodes the result. Filtered and
-asserted, the same hazard audited for cfb_open_close in
-two_rule_filter_check.py.
+2. line_history.commence_time DRIFTS -- GB-CHI carries four values for one
+   game and 136 of 272 pairs do this -- so every cut is taken against
+   clv_tracking's commence_time instead.
+3. It also records THROUGH kickoff, some games' last snapshot landing hours
+   after it, which encodes the result. Filtered and asserted, the same hazard
+   audited for cfb_open_close in two_rule_filter_check.py.
 
 Usage:
     python scripts/bet_time_gate.py
-    python scripts/bet_time_gate.py --horizons 24,3
+    python scripts/bet_time_gate.py --horizons 168,144
 """
 
 import sys
@@ -88,7 +95,13 @@ from nfl_threshold_sweep import (nfl_frame, rate, show, MOVE_BARS,
                                  TICKET_BARS, VIG_RETURN)
 from log_gate_readings import toward_us as _toward_us
 
-HORIZONS = [48, 24, 6, 3]
+# Horizons a bet would actually be placed at. The opener is NOT one of
+# them: it is a lookahead price up to 10 weeks before kickoff, and the
+# user's stated window is 'a week away, 6 days away, absolutely, but not
+# necessarily that far away'. 168h/144h is that window.
+HORIZONS = [168, 144, 120, 72, 48, 24]
+BET_HORIZON = 144   # 6 days: the default realistic decision point
+STALE_DAYS = 45     # opener older than this is a lookahead price
 MOVE_BAR = 1.5
 TICKET_BAR = 50.0
 
@@ -205,11 +218,12 @@ def accumulation(d, horizons):
               f"{share:>15.0%}{corr:>15.2f}")
     print(f"  {'final':<10}{int(fin.notna().sum()):>11}"
           f"{fin.mean():>+11.2f}{1.0:>15.0%}{1.0:>15.2f}")
-    print("\n  The movement is DONE well before kickoff: 94% of it by T-48h,")
-    print("  98% by T-24h, correlation 0.97+ with the final figure. The")
-    print("  freeze time being 320h out does not matter, because nothing")
-    print("  forces the bet to be placed when the pick is generated. The")
-    print("  gate is knowable two days early -- the cost is the price.")
+    print()
+    print("  By T-48h the movement is essentially complete -- 94%, corr")
+    print("  0.97. At a REALISTIC bet time it is not: 77% by T-168h and 76%")
+    print("  by T-144h, correlation 0.78 and 0.89. Betting a week out means")
+    print("  reading the gate on about three quarters of the movement, and")
+    print("  waiting for the rest means paying for it in the price.")
 
 
 def the_tradeoff(d, horizons):
@@ -244,10 +258,12 @@ def the_tradeoff(d, horizons):
         b = "--" if br is None else f"{bw}-{bl}  {br:.1%}"
         print(f"  T-{h:<6}{len(g):>7}{a:>22}{b:>24}")
 
-    print("\n  the two columns are the same picks at two prices.")
-    print("  The opener cannot be had by waiting, so the gap between them")
-    print("  is what reading the gate actually costs -- one win, not the")
-    print("  whole edge.")
+    print()
+    print("  Both columns are the same picks at two prices, and the opener",
+          "column")
+    print("  is the unbettable one: it is a lookahead number up to ten weeks")
+    print("  out. The gap is not what waiting costs, it is how much of the")
+    print("  published record came from a price that was never on offer.")
 
     # And the cost in points, which is the whole argument in one line.
     g = d[(d.clv_points >= MOVE_BAR) & (d.our_tix < TICKET_BAR)]
@@ -261,54 +277,145 @@ def the_tradeoff(d, horizons):
               f"(n={int(np.isfinite(give).sum())})")
 
 
-def strategies(d, h=48, top_up=0.5):
-    """The actual choice, priced. Three ways to play the same 88 picks.
+def opener_era(d):
+    """Tag each pick by how stale the line open_line was measured against.
 
-    The gate cannot be read at the opener and the opener cannot be had by
-    waiting, so "bet the opener AND size on the gate" is not available. But a
-    THIRD option is, and it falls out of the horizon measurement: take the
-    base unit at the opener on everything, then top up the gated picks later
-    at whatever the number has become. The base keeps the good price on all 88
-    and only the 0.5u increment pays the worse one.
+    The single most important split in this file. Through week 4 the opener
+    was same-day; from week 7 it has been 43-71 days old, because the model
+    freezes ~13 days out while the odds feed carries no line for that game
+    until ~10 days out. A large move_toward_us on a stale opener is a
+    lookahead correction that already happened.
     """
-    print("\n" + "=" * 74)
-    print(f"THE THREE WAYS TO PLAY IT  (top-up {top_up}u, read at T-{h}h)")
-    print("=" * 74)
+    a = pd.DataFrame(fetch_all("nfl_pick_opener_age",
+                               "game_id, bet_type, opener_age_days"))
+    d = d.merge(a, on=["game_id", "bet_type"], how="left")
+    d["era"] = np.where(d.opener_age_days > STALE_DAYS, "stale", "fresh")
+    return d
 
-    def units(x, col, stake):
-        w = int((x[col] == "win").sum())
-        l = int((x[col] == "loss").sum())
+
+def wl(x, rescol):
+    """(wins, losses, rate) at an arbitrary result column."""
+    w = int((x[rescol] == "win").sum())
+    l = int((x[rescol] == "loss").sum())
+    return w, l, (w / (w + l) if w + l else None)
+
+
+def cell(x, rescol):
+    w, l, r = wl(x, rescol)
+    return "--" if r is None else f"{w}-{l} {r:.0%} (n={w + l})"
+
+
+def realistic_record(d, horizons):
+    """The record at prices that were actually available to take.
+
+    Everything published before this graded at open_line. That is a lookahead
+    number, not a price this bettor takes, so the opener row here is the
+    fantasy baseline and every row below it is the real one.
+    """
+    print()
+    print("=" * 78)
+    print("THE RECORD AT A PRICE YOU WOULD ACTUALLY BET")
+    print("=" * 78)
+    print(f"  {'graded at':<16}{'all picks':>21}{'rule 1':>21}{'both rules':>21}")
+
+    rows = [("the OPENER", "result", "clv_points")]
+    rows += [(f"T-{h}h ({h // 24}d)", f"result_t{h}", f"move_t{h}")
+             for h in horizons]
+    for label, rescol, movecol in rows:
+        g = d[d[rescol].notna()]
+        r1 = g[g[movecol] >= MOVE_BAR]
+        both = r1[r1.our_tix < TICKET_BAR]
+        print(f"  {label:<16}{cell(g, rescol):>21}{cell(r1, rescol):>21}"
+              f"{cell(both, rescol):>21}")
+    print()
+    print("  The opener row is not a result, it is a scoring convention. Read")
+    print("  the T-168h and T-144h rows as the record.")
+
+
+def by_era(d, h=None):
+    """The same picks split by whether the opener was fresh or stale.
+
+    This is where the gate's apparent edge turns out to live. If rule 1 only
+    works on stale openers it is not reading sharp money, it is reading the
+    gap between a lookahead price and the real market.
+    """
+    h = h or BET_HORIZON
+    rescol, movecol = f"result_t{h}", f"move_t{h}"
+    print()
+    print("=" * 78)
+    print(f"SPLIT BY OPENER STALENESS  (graded at T-{h}h, the real price)")
+    print("=" * 78)
+    print(f"  {'opener':<22}{'all picks':>21}{'rule 1':>21}{'both rules':>21}")
+    for era in ("fresh", "stale"):
+        g = d[(d.era == era) & d[rescol].notna()]
+        r1 = g[g[movecol] >= MOVE_BAR]
+        both = r1[r1.our_tix < TICKET_BAR]
+        lbl = f"{era} ({g.opener_age_days.mean():.0f}d avg)" if len(g) else era
+        print(f"  {lbl:<22}{cell(g, rescol):>21}{cell(r1, rescol):>21}"
+              f"{cell(both, rescol):>21}")
+
+    print()
+    print("  and the same split graded at the OPENER, for contrast:")
+    for era in ("fresh", "stale"):
+        g = d[(d.era == era) & d.result.notna()]
+        r1 = g[g.clv_points >= MOVE_BAR]
+        both = r1[r1.our_tix < TICKET_BAR]
+        print(f"  {era:<22}{cell(g, 'result'):>21}{cell(r1, 'result'):>21}"
+              f"{cell(both, 'result'):>21}")
+
+    print()
+    for era in ("fresh", "stale"):
+        g = d[d.era == era]
+        if g.empty:
+            continue
+        print(f"  {era:<6} openers: mean CLV {g.clv_points.mean():+.2f}, "
+              f"mean move by T-{h}h {g[movecol].mean():+.2f}, n={len(g)}")
+
+
+def strategies(d, h=BET_HORIZON, top_up=0.5):
+    """The staking choice, priced at a line that was actually available.
+
+    An earlier version of this function compared everything against betting
+    the opener. That has been dropped: the opener is a lookahead price up to
+    ten weeks before kickoff and is not a number this bettor takes, so an
+    option built on it is not an option. Every row below is placed and graded
+    at T-{h}h.
+    """
+    print()
+    print("=" * 78)
+    print(f"THE STAKING CHOICE AT T-{h}h  (top-up {top_up}u)")
+    print("=" * 78)
+    rescol, movecol = f"result_t{h}", f"move_t{h}"
+    g = d[d[rescol].notna()]
+
+    def units(x, stake):
+        w, l, _ = wl(x, rescol)
         return stake * (w * VIG_RETURN - l), w, l
 
-    res_h = f"result_t{h}"
-    fires = (d[f"move_t{h}"] >= MOVE_BAR) & (d.our_tix < TICKET_BAR)
-    g = d[fires]
+    gated = g[(g[movecol] >= MOVE_BAR) & (g.our_tix < TICKET_BAR)]
 
-    a, aw, al = units(d, "result", 1.0)
-    print(f"  A  flat 1u on all {len(d)}, every bet at the OPENER")
+    a, aw, al = units(g, 1.0)
+    print(f"  A  flat 1u on all {len(g)}")
     print(f"     {aw}-{al}  {aw / (aw + al):.1%}   {a:+.1f}u")
 
-    b1, bw, bl = units(d, res_h, 1.0)
-    b2, _, _ = units(g, res_h, top_up)
-    print(f"\n  B  wait to T-{h}h on everything, 1u all + {top_up}u on the "
-          f"{len(g)} gated")
-    print(f"     {bw}-{bl}  {bw / (bw + bl):.1%}   {b1:+.1f}u base "
-          f"{b2:+.1f}u top-up = {b1 + b2:+.1f}u")
+    b2, bw, bl = units(gated, top_up)
+    print()
+    print(f"  B  1u on all {len(g)}, plus {top_up}u on the {len(gated)} gated")
+    print(f"     base {a:+.1f}u  +  top-up {bw}-{bl} {b2:+.1f}u = {a + b2:+.1f}u")
 
-    c2, cw, cl = units(g, res_h, top_up)
-    print(f"\n  C  1u on all {len(d)} at the OPENER, then {top_up}u top-up at "
-          f"T-{h}h on the {len(g)} gated")
-    print(f"     base {a:+.1f}u  +  top-up {cw}-{cl} {c2:+.1f}u "
-          f"= {a + c2:+.1f}u")
+    c, cw, cl = units(gated, 1.0)
+    print()
+    print(f"  C  1u on the {len(gated)} gated picks ONLY, nothing else")
+    print(f"     {cw}-{cl}  {cw / (cw + cl):.1%}   {c:+.1f}u")
 
-    print(f"\n  B gives up the opener on all {len(d)} picks to size up {len(g)}"
-          f" of them.")
-    print("  C keeps it on every base unit and pays the worse number only on")
-    print("  the increment. C dominates B whenever the opener is the better")
-    print("  price, which the CLV figures say it is by construction.")
-    print("\n  All of this is contingent: the gated 16 are the same 16 cells")
-    print("  the permutation test priced at p=0.048. This measures whether")
-    print("  the gate is OPERABLE, not whether it is REAL.")
+    print()
+    print("  This inverts the earlier recommendation. Graded at the opener the")
+    print("  ungated set looked like a 50% base worth betting flat; at a price")
+    print("  actually available it is still ~50%, which is BELOW the 52.38%")
+    print("  break-even, so A loses and the gate stops being a sizing")
+    print("  refinement and becomes the only part carrying a positive record.")
+    print("  On 11-16 picks that is a thin thing to lean on -- and it is the")
+    print("  same cell the permutation test priced at p=0.048.")
 
 
 def bet_time_grid(d, h):
@@ -347,10 +454,12 @@ def main():
     d = nfl_frame()
     d = d[d.home_score.notna() & d.open_line.notna()]
     print(f"{len(d)} graded NFL qualifying picks with an opener and a score")
-    d = bet_time_lines(d, horizons)
+    d = opener_era(bet_time_lines(d, horizons))
     accumulation(d, horizons)
+    realistic_record(d, horizons)
+    by_era(d)
     the_tradeoff(d, horizons)
-    strategies(d, h=max(h for h in horizons if h >= 24) if any(h >= 24 for h in horizons) else max(horizons))
+    strategies(d)
     bet_time_grid(d, min(horizons))
 
 

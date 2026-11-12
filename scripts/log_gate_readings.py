@@ -155,6 +155,26 @@ def current_splits(picks):
     return d
 
 
+def opener_age(picks):
+    """How stale the line open_line was measured against.
+
+    Read from the nfl_pick_opener_age view, which does the line_history join
+    in the database -- the alternative is transferring 57k snapshot rows every
+    two hours to compute one number per pick.
+
+    This is the single most important qualifier on a reading. Measured
+    2026-11-12: when rule 1 fires on a FRESH opener the record is 9-10, and on
+    a stale one 8-3, with average CLV -0.02 against +1.57. A big
+    move_toward_us on a 60-day-old opener is a lookahead correction that
+    already happened, not an edge still on the table.
+    """
+    a = pd.DataFrame(fetch_all("nfl_pick_opener_age",
+                               "game_id, bet_type, opener_age_days"))
+    if a.empty:
+        return picks.assign(opener_age_days=np.nan)
+    return picks.merge(a, on=["game_id", "bet_type"], how="left")
+
+
 def main():
     dry = "--dry-run" in sys.argv
     within = WITHIN_HOURS
@@ -172,7 +192,7 @@ def main():
         print("  nothing upcoming; no readings to take")
         return
 
-    d = current_splits(current_lines(picks))
+    d = opener_age(current_splits(current_lines(picks)))
     d["move_toward_us"] = toward_us(d.predicted_side, d.open_line,
                                     d.line_at_read)
     d["hours"] = (d.kick - pd.Timestamp(now)).dt.total_seconds() / 3600
@@ -197,6 +217,8 @@ def main():
             # Audit only -- see the column comment. Movement is DraftKings.
             "line_at_splits": (None if pd.isna(r.line_at_capture)
                                else float(r.line_at_capture)),
+            "opener_age_days": (None if pd.isna(r.opener_age_days)
+                                else round(float(r.opener_age_days), 1)),
             "move_bar": MOVE_BAR, "ticket_bar": TICKET_BAR,
         })
 
