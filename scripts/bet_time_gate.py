@@ -86,6 +86,7 @@ warnings.filterwarnings("ignore")
 from score_week import fetch_all
 from nfl_threshold_sweep import (nfl_frame, rate, show, MOVE_BARS,
                                  TICKET_BARS, VIG_RETURN)
+from log_gate_readings import toward_us as _toward_us
 
 HORIZONS = [48, 24, 6, 3]
 MOVE_BAR = 1.5
@@ -97,15 +98,13 @@ def ts(s):
 
 
 def toward_us(d, line_col, open_col="open_line"):
-    """Points the line has come TOWARD our side. Mirrors clv_points.
+    """Frame-shaped wrapper over the canonical sign convention.
 
-    home/under gain when the number falls, away/over when it rises. Same
-    convention as build_movement_history.py:108 and :132, so the result is
-    directly comparable to the stored clv_points.
+    The definition itself lives in log_gate_readings.toward_us, which is the
+    production path, so there is exactly one copy of it. This project has
+    been bitten by a restated sign convention before.
     """
-    delta = d[line_col] - d[open_col]
-    rising = d.predicted_side.isin(["away", "over"])
-    return np.where(rising, delta, -delta)
+    return _toward_us(d.predicted_side, d[open_col], d[line_col])
 
 
 def grade_at(d, line_col):
