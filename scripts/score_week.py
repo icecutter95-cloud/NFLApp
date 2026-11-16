@@ -31,6 +31,36 @@ from config import (
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
+def ts(s):
+    """Parse ISO timestamps on ANY pandas version. Use this, not to_datetime.
+
+    There is no single call that works everywhere, which is why this exists:
+
+      pandas >= 2.0   format="ISO8601" is a sentinel meaning "these are all
+                      ISO but not identically formatted". Plain inference
+                      instead locks onto the FIRST element's format and raises
+                      on the first row carrying microseconds.
+      pandas 1.5.3    the sentinel is taken as a LITERAL format string, so
+                      every row fails to match. Plain inference is lenient
+                      there and handles mixed precision fine.
+
+    So the sentinel is tried first and plain inference is the fallback, in
+    that order. Verified on pandas 3.0.3: both agree on uniform timestamps,
+    and only the sentinel survives mixed precision.
+
+    This is not hypothetical. CI resolves pandas 1.5.3 -- nfl-data-py caps it,
+    while requirements-ci.txt only asks for >=1.5.0 -- so log_gate_readings.py
+    died on every scheduled run from 2026-11-12 to 2026-11-16 with
+    "time data '2026-09-13T13:00:00+00:00' does not match format 'ISO8601'",
+    having been written and tested against pandas 3.0.3 locally.
+    """
+    import pandas as pd
+    try:
+        return pd.to_datetime(s, utc=True, format="ISO8601")
+    except (ValueError, TypeError):
+        return pd.to_datetime(s, utc=True)
+
+
 def fetch_all(table, columns="*", page=1000, **filters):
     """Every row from a table, paging past PostgREST's 1000-row cap.
 

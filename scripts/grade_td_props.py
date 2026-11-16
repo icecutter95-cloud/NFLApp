@@ -31,7 +31,7 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 from config import DATA_DIR, CURRENT_SEASON
-from score_week import supabase, fetch_all
+from score_week import supabase, fetch_all, ts
 
 COLS = ["game_id", "season", "week", "home_team", "away_team",
         "touchdown", "td_player_id", "td_player_name", "td_team"]
@@ -86,10 +86,8 @@ def report(season: int):
     if props.empty:
         print("\nno captures yet")
         return
-    props["captured_at"] = pd.to_datetime(props.captured_at, utc=True,
-                                          format="ISO8601")
-    props["kick"] = pd.to_datetime(props.commence_time, utc=True,
-                                   format="ISO8601")
+    props["captured_at"] = ts(props.captured_at)
+    props["kick"] = ts(props.commence_time)
     print(f"\n{len(props)} captured prices | {props.event_id.nunique()} games"
           f" | {props.book.nunique()} books | "
           f"{props.captured_at.min():%m-%d %H:%M} to "

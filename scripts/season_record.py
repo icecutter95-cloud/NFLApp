@@ -58,16 +58,12 @@ from scipy.stats import binomtest
 
 warnings.filterwarnings("ignore")
 
-from score_week import fetch_all
+from score_week import fetch_all, ts
 
 MOVE_BAR = 1.5
 TICKET_BAR = 50.0
 VIG_RETURN = 100 / 110  # win 0.909 units per unit risked at -110
 BREAK_EVEN = 110 / 210  # 0.5238
-
-
-def ts(s):
-    return pd.to_datetime(s, utc=True, format="ISO8601")
 
 
 def line(x, label, indent=2, show_p=True):

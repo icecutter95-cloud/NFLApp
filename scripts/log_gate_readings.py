@@ -57,17 +57,13 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-from score_week import supabase, fetch_all
+from score_week import supabase, fetch_all, ts
 
 MOVE_BAR = 1.5      # rule 1: points the line must come toward our side
 TICKET_BAR = 50.0   # rule 2: max % of tickets on our side
 BOOK = "draftkings"  # the book bet_time_gate.py measured the horizons on
 WITHIN_HOURS = 336  # log from two weeks out; the pick freezes ~320h before
 ALARM_HOURS = 36    # only imminent games with no reading are worth shouting
-
-
-def ts(s):
-    return pd.to_datetime(s, utc=True, format="ISO8601")
 
 
 def toward_us(side, open_line, line):

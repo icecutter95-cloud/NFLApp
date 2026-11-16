@@ -77,7 +77,7 @@ from scipy.stats import binomtest
 
 warnings.filterwarnings("ignore")
 
-from score_week import fetch_all
+from score_week import fetch_all, ts
 
 MOVE_BARS = [None, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
 TICKET_BARS = [None, 60.0, 55.0, 50.0, 45.0, 40.0]
@@ -86,10 +86,6 @@ SHUFFLES = 20000
 VIG_RETURN = 100 / 110
 BREAK_EVEN = 110 / 210
 RNG = np.random.default_rng(20261112)
-
-
-def ts(s):
-    return pd.to_datetime(s, utc=True, format="ISO8601")
 
 
 def rate(x):

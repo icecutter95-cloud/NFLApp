@@ -90,7 +90,7 @@ from scipy.stats import binomtest
 
 warnings.filterwarnings("ignore")
 
-from score_week import fetch_all
+from score_week import fetch_all, ts
 from nfl_threshold_sweep import (nfl_frame, rate, show, MOVE_BARS,
                                  TICKET_BARS, VIG_RETURN)
 from log_gate_readings import toward_us as _toward_us
@@ -104,10 +104,6 @@ BET_HORIZON = 144   # 6 days: the default realistic decision point
 STALE_DAYS = 45     # opener older than this is a lookahead price
 MOVE_BAR = 1.5
 TICKET_BAR = 50.0
-
-
-def ts(s):
-    return pd.to_datetime(s, utc=True, format="ISO8601")
 
 
 def toward_us(d, line_col, open_col="open_line"):

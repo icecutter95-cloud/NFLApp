@@ -39,7 +39,7 @@ from scipy.stats import binomtest
 
 warnings.filterwarnings("ignore")
 
-from score_week import fetch_all
+from score_week import fetch_all, ts
 
 # Below these, a section reports its sample and stops.
 MIN_GRADED = 200          # calibration
@@ -120,8 +120,8 @@ def devig_shin(q, target=1.0):
 def board_with_devigs(props: pd.DataFrame, totals: dict) -> pd.DataFrame:
     """Latest pre-kickoff price per book -> per-player consensus + 3 de-vigs."""
     p = props.copy()
-    p["captured_at"] = pd.to_datetime(p.captured_at, utc=True, format="ISO8601")
-    p["kick"] = pd.to_datetime(p.commence_time, utc=True, format="ISO8601")
+    p["captured_at"] = ts(p.captured_at)
+    p["kick"] = ts(p.commence_time)
     p = p[p.captured_at < p.kick]
     if p.empty:
         return pd.DataFrame()
@@ -235,7 +235,7 @@ def section_movement(props):
     print("3. MOVEMENT — does a shortening price predict scoring?")
     print("=" * 70)
     p = props.copy()
-    p["captured_at"] = pd.to_datetime(p.captured_at, utc=True, format="ISO8601")
+    p["captured_at"] = ts(p.captured_at)
     moves = p[p.note == "move"]
     print(f"  price changes logged: {len(moves)} across "
           f"{moves.player.nunique()} players, {moves.book.nunique()} books")
@@ -272,7 +272,7 @@ def section_repricing(props, injuries):
     if injuries.empty:
         print("  nfl_injury_log is empty."); return
     inj = injuries.copy()
-    inj["observed_at"] = pd.to_datetime(inj.observed_at, utc=True, format="ISO8601")
+    inj["observed_at"] = ts(inj.observed_at)
     material = inj[(inj.status.isin(["out", "doubtful"]))
                    & (inj.prev_status.isna() | ~inj.prev_status.isin(["out", "doubtful"]))
                    & inj.position.isin(["QB", "RB", "WR", "TE"])]
@@ -287,7 +287,7 @@ def section_repricing(props, injuries):
         print("  with no history, which is why the log exists at all.")
         return
     p = props.copy()
-    p["captured_at"] = pd.to_datetime(p.captured_at, utc=True, format="ISO8601")
+    p["captured_at"] = ts(p.captured_at)
     rows = []
     for ev in material.itertuples():
         team = ev.team
