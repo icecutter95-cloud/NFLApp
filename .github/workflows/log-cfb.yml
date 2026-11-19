@@ -7,9 +7,19 @@ name: Log CFB Predictions
 # comes from. Keeping college on its own path means a CFBD outage or a crosswalk
 # gap can never take down the one market with a demonstrated edge.
 #
-# Every 3 hours, matching the NFL cadence and for the same reason: a pick is
-# worth ~+1.55 CLV in its first six hours and roughly nothing after three days,
-# so a board that posts just after a run must not sit unlogged for long.
+# Asks for every 3 hours, matching the NFL cadence and for the same reason: a
+# pick is worth ~+1.55 CLV in its first six hours and roughly nothing after
+# three days, so a board that posts just after a run must not sit unlogged for
+# long.
+#
+# IT DOES NOT RUN EVERY 3 HOURS. Measured 2026-11-19: 43 of 112 scheduled runs
+# over 14 days (38%), and cfb_line_history snapshot gaps average 8.3h with a
+# max of 12h -- not one gap in those 14 days honoured the 3h asked for here.
+# So the goal stated above is NOT being met: a board CAN sit unlogged for
+# longer than the 6h window that is the whole reason for the cadence. Whether
+# that is actually eating CFB opener value is UNMEASURED -- the obvious probe
+# is confounded, see the open question in .github/workflows/README.md. Raising
+# the cron will not help; read that file first.
 #
 # Predictions are frozen on first sight — cfb_predictions is keyed on
 # (game_id, bet_type) — so re-running is harmless.
@@ -61,6 +71,13 @@ jobs:
         run: python scripts/fetch_cfb_odds.py
 
       - name: Fetch public betting splits
+        # ALSO RUNS in collect-splits.yml -- fetch_cfb_splits.py is deliberately
+        # left in both workflows. The two fire in independent GitHub
+        # scheduler waves, so CFB splits get ~6 captures a day instead of ~3.
+        # That redundancy started as an accident and is now load-bearing:
+        # merging these workflows would quietly drop it. See
+        # .github/workflows/README.md.
+        #
         # Best effort. Action Network is a third-party page, not a contracted
         # feed -- if its markup changes or a datacenter IP gets refused, the
         # board and the grading still matter more than the splits do.

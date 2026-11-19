@@ -18,18 +18,29 @@ on:
         required: false
         default: ''
   schedule:
-    # Every 3 hours. This used to run once daily, which was actively costly:
+    # Asks for every 3 hours -- see the measurement below, it does not get
+    # them. This used to run once daily, which was actively costly:
     # a pick is worth ~+1.55 CLV inside the first 6 hours and roughly nothing
     # after 3 days (see scripts/screen_bet_timing.py), so a board that posted
     # just after a daily run could be up to 24h stale before it was ever
     # visible — most of the edge, gone before anyone saw the bet.
     #
-    # refresh-odds (the ONLY writer of line_history) runs hourly via pg_cron,
-    # at :00, so each pass here at :30 reads a snapshot at most 30 minutes old.
-    # It was once a day until 2026-09-11 -- this comment used to claim every 15
+    # refresh-odds (the ONLY writer of line_history) runs hourly via pg_cron
+    # at :00 and delivers 90% of those runs, so whenever this pass does run it
+    # reads a snapshot at most ~1h old. That part is sound. refresh-odds itself
+    # was once a day until 2026-09-11 -- this comment used to claim every 15
     # minutes, which was never true -- and at that cadence every "current close"
-    # and CLV figure was up to 24h stale. See supabase/cron_jobs.sql. At 3h the frozen number is at worst 3 hours behind
-    # the true opener, comfortably inside the best bucket.
+    # and CLV figure was up to 24h stale. See supabase/cron_jobs.sql.
+    #
+    # THE 3h ABOVE IS WHAT WE ASK FOR, NOT WHAT RUNS. This comment used to
+    # claim the frozen number was "at worst 3 hours behind the true opener,
+    # comfortably inside the best bucket". Measured 2026-11-19: GitHub
+    # delivered 44 of 112 scheduled runs over 14 days (39%), about 3 a day,
+    # so the worst case is ~12h, not 3h -- outside the 6h bucket the note
+    # above is built on. Raising the cron does NOT fix this; the 2-hourly
+    # workflows in this directory get fewer runs than the 3-hourly ones.
+    # Read .github/workflows/README.md before touching this number. This is
+    # the second time this comment has overstated its own cadence.
     - cron: '30 */3 * * *'
 
 jobs:

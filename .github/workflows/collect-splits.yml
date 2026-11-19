@@ -24,7 +24,12 @@ on:
         required: false
         default: ''
   schedule:
-    # Every 2 hours. Splits are only interesting next to the line that was live
+    # Asks for every 2 hours; GitHub delivers about 3 runs a day (48 of 168
+    # scheduled runs over the 14 days to 2026-11-19, 29%), which is why
+    # nfl_gate_readings gets 2-3 readings a day rather than 12. Raising this
+    # number does not help -- see .github/workflows/README.md.
+    #
+    # Splits are only interesting next to the line that was live
     # beside them, and captured_at is floored to the minute so repeat fetches
     # inside one CDN window collapse onto a single row rather than
     # double-counting an observation. Offset to :50 to stay clear of the hourly
@@ -65,6 +70,12 @@ jobs:
           fi
 
       - name: College splits
+        # ALSO RUNS in log-cfb.yml -- fetch_cfb_splits.py is deliberately
+        # left in both workflows. The two fire in independent GitHub
+        # scheduler waves, so CFB splits get ~6 captures a day instead of ~3.
+        # That redundancy started as an accident and is now load-bearing:
+        # merging these workflows would quietly drop it. See
+        # .github/workflows/README.md.
         continue-on-error: true
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
