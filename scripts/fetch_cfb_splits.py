@@ -75,7 +75,7 @@ import requests
 warnings.filterwarnings("ignore")
 
 from action_splits import (fetch_current, fetch_week, outcomes, kickoff,
-                           CONSENSUS_BOOK)
+                           posted_markets, CONSENSUS_BOOK)
 from cfb_teams import to_key, cfbd_to_key
 from config import CURRENT_SEASON as SEASON
 from score_week import supabase, fetch_all
@@ -163,9 +163,17 @@ def main():
     # that DID match were later kickoffs, so nothing about the gap looked
     # chronological and it read like a team-name problem instead.
     board = fetch_all("cfb_predictions",
-                      "game_id, home_team, away_team, commence_time")
+                      "game_id, bet_type, home_team, away_team, commence_time")
     by_pair, seen = {}, set()
+    # Markets we actually hold a pick on, per game. Coverage is judged against
+    # THIS, not against the game list: a game with a total but no spread used
+    # to report as covered, which is how a missing spread stayed invisible
+    # while the board said 7/7.  total_shadow is excluded -- Action carries no
+    # such market, so it can never be matched and would alarm forever.
+    want_markets = {}
     for g in board:
+        if g["bet_type"] in ("spread", "total"):
+            want_markets.setdefault(g["game_id"], set()).add(g["bet_type"])
         if g["game_id"] in seen:
             continue
         seen.add(g["game_id"])
@@ -173,6 +181,7 @@ def main():
     print(f"board: {len(seen)} games")
 
     rows, matched, skipped_fcs, ambiguous = [], set(), 0, []
+    matched_markets, posted = set(), {}
     for g in games:
         tm = {t["id"]: t for t in g["teams"]}
         home = team_key(tm.get(g.get("home_team_id")) or {})
@@ -198,6 +207,7 @@ def main():
             continue
         gid = hit[0]["game_id"]
 
+        posted[gid] = posted_markets(g, CONSENSUS_BOOK)
         for bid in (want or {CONSENSUS_BOOK}):
             for market, vals in outcomes(g, bid).items():
                 rows.append({
@@ -206,6 +216,7 @@ def main():
                     "note": books.get(bid), **vals,
                 })
                 matched.add(gid)
+                matched_markets.add((gid, market))
 
     print(f"  {len(matched)} board games matched, {len(rows)} split rows "
           f"({skipped_fcs} non-FBS games skipped)")
@@ -217,17 +228,37 @@ def main():
     # matched games and looked healthy while every game kicking that night was
     # missing, because the truncated board happened to retain later kickoffs.
     # Imminent games with no splits are the only number worth alarming on.
-    soon = datetime.now(timezone.utc) + timedelta(hours=36)
+    # Window is overridable so the coverage branches can be exercised on
+    # demand rather than only when a game happens to kick inside 36 hours.
+    hours = 36
+    if "--hours" in sys.argv:
+        hours = float(sys.argv[sys.argv.index("--hours") + 1])
+    now = datetime.now(timezone.utc)
+    soon = now + timedelta(hours=hours)
     upcoming = {g["game_id"] for g in board
-                if datetime.now(timezone.utc)
-                < datetime.fromisoformat(g["commence_time"]) < soon}
-    gap = upcoming - matched
-    if upcoming:
-        print(f"  next 36h: {len(upcoming) - len(gap)}/{len(upcoming)} "
-              f"board games have splits")
-    if gap:
-        print(f"  WARNING: {len(gap)} game(s) kicking within 36h got no "
-              f"splits: {', '.join(sorted(gap)[:6])}")
+                if now < datetime.fromisoformat(g["commence_time"]) < soon}
+
+    # Per MARKET, not per game. Each shortfall is then sorted into the two
+    # cases that look identical from the row count alone: Action carrying a
+    # zero placeholder, which is normal and happens on roughly 3% of college
+    # markets, versus a market the feed should have and we did not get.
+    want_pairs = {(gid, m) for gid in upcoming
+                  for m in want_markets.get(gid, ())}
+    gap = want_pairs - matched_markets
+    not_posted = {(gid, m) for gid, m in gap if posted.get(gid, {}).get(m) is False}
+    real = gap - not_posted
+    if want_pairs:
+        print(f"  next {hours:g}h: {len(want_pairs) - len(gap)}/{len(want_pairs)} "
+              f"picked markets have splits")
+    if not_posted:
+        print(f"  {len(not_posted)} market(s) not posted by Action (zero "
+              f"placeholder, normal): "
+              f"{', '.join(f'{g[:8]}/{m}' for g, m in sorted(not_posted)[:4])}")
+    if real:
+        print(f"  WARNING: {len(real)} picked market(s) kicking within "
+              f"{hours:g}h "
+              f"got no splits and were NOT a zero placeholder: "
+              f"{', '.join(f'{g[:8]}/{m}' for g, m in sorted(real)[:6])}")
     if not rows:
         print("  nothing to write")
         return

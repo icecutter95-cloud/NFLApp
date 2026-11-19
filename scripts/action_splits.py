@@ -170,5 +170,32 @@ def outcomes(game, book=CONSENSUS_BOOK):
     return out
 
 
+def posted_markets(game, book=CONSENSUS_BOOK):
+    """Which markets the feed CARRIES for a game, zero placeholders included.
+
+    outcomes() deliberately DROPS a market whose percentages are all zero --
+    Action Network's placeholder for "not computed yet" -- which is correct,
+    but it makes "Action has not posted this" and "our collection is broken"
+    look identical to everything downstream. This reports what was actually
+    present so the two can be told apart.
+
+    Returns {market: has_real_percentages}. A market absent from the feed
+    entirely is absent from the dict; a market present but zeroed maps to
+    False. Only the first case, or a game missing outright, is worth alarming
+    on. Added for the CFB collector; the NFL one can use it unchanged.
+    """
+    mk = (game.get("markets") or {}).get(book) or {}
+    ev = mk.get("event") or {}
+    out = {}
+    for market in ("spread", "total"):
+        rows = ev.get(market) or []
+        if not rows:
+            continue
+        out[market] = any(
+            ((o.get("bet_info") or {}).get("tickets") or {}).get("percent")
+            for o in rows)
+    return out
+
+
 def kickoff(game):
     return datetime.fromisoformat(game["start_time"].replace("Z", "+00:00")).date()
