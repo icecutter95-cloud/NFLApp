@@ -69,6 +69,37 @@ jobs:
             python scripts/fetch_nfl_splits.py --next-weeks
           fi
 
+      - name: College lines
+        # SECOND line pull, deliberately duplicating log-cfb.yml's "Fetch
+        # current CFB odds". Measured 2026-11-20 over 4 days: CFB splits got 34
+        # captures and CFB lines only 11, because fetch_cfb_splits.py runs in
+        # three places and fetch_cfb_odds.py ran in exactly one. The result was
+        # a line up to 4h older than the tickets beside it -- on 11-20 the
+        # WYOMING/NEW_MEXICO spread sat at a 4-day-old 7.5 while the 16:00
+        # splits capture carried 9.0, which is the difference between a +3.0
+        # and a +1.5 reading of rule 1 on a 1.5-point bar.
+        #
+        # Raising the cron does NOT fix that -- see README.md, GitHub delivers
+        # ~a third of scheduled runs whatever the interval. Adding the pull to
+        # this workflow does, because the two workflows fire in independent
+        # scheduler waves. It also puts the line pull in the SAME RUN as the
+        # splits below, so line and tickets land seconds apart, not hours.
+        #
+        # cfb_line_history is append-only (surrogate pkey, recorded_at defaults
+        # to now()), so a second pull can never overwrite an opener or conflict
+        # with log-cfb's row. Cost is 2 Odds API credits per call.
+        #
+        # continue-on-error, UNLIKE log-cfb.yml, where this step failing should
+        # stop the run because the predictions after it would be meaningless.
+        # Here it is a secondary capture and the gate readings come after it; a
+        # failed odds pull must not cost the NFL half its reading.
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python scripts/fetch_cfb_odds.py
+
       - name: College splits
         # ALSO RUNS in log-cfb.yml -- fetch_cfb_splits.py is deliberately
         # left in both workflows. The two fire in independent GitHub

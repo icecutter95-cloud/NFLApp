@@ -93,11 +93,52 @@ Measured, so that nobody pays to fix a problem that is not there:
   first fire" to ~8h instead of ~2h, on a question answered once per bet at a
   6-7 day horizon.
 
-`scripts/fetch_cfb_splits.py` runs in **both** `collect-splits.yml` (as
-"College splits") and `log-cfb.yml` (as "Fetch public betting splits"), so CFB
-splits are captured ~6x/day from two independent waves. That redundancy is
-accidental but useful; consolidating the workflows would quietly drop it to
-~5x/day.
+## Deliberate duplication is the only lever that works
+
+Because delivery is per-wave and not per-cron, **the way to capture something
+more often is to run it in a second workflow, not to ask for it more often.**
+
+`scripts/fetch_cfb_splits.py` runs in `collect-splits.yml` (as "College
+splits") and `log-cfb.yml` (as "Fetch public betting splits"), and also lands
+at a fixed 04:00 and 16:00 UTC from a path outside GitHub -- almost certainly
+`collect_splits.bat` still running as a local scheduled task. Those fixed-time
+captures carry far more rows than the GitHub waves (345-365 against ~107), so
+they are a separate, more thorough pass. Three paths in all. The redundancy
+started as an accident and is now load-bearing; merging the workflows would
+quietly drop it.
+
+`scripts/fetch_cfb_odds.py` had exactly one path until 2026-11-20 and now runs
+in both workflows too, for a measured reason. Over the 4 days to 2026-11-20:
+
+| | distinct captures / 4d | per day |
+|---|---|---|
+| CFB splits | 34 | ~8.5 |
+| CFB lines | 11 | ~2.75 |
+
+The lines refreshed a third as often as the tickets beside them. On 2026-11-20
+the `WYOMING`/`NEW_MEXICO` spread in `cfb_line_history` still read 7.5 from a
+pull four days earlier, while the 16:00 splits capture carried 9.0 -- the
+difference between reading rule 1 as +3.0 (passes easily) and +1.5 (exactly at
+the bar). Adding the pull to `collect-splits.yml` roughly doubles line captures
+and, more usefully, puts the line and the tickets in the same run seconds
+apart. Cost: 2 Odds API credits per extra call, ~180/month.
+
+`cfb_line_history` is append-only -- surrogate primary key, `recorded_at`
+defaults to `now()` -- so the second pull can never overwrite an opener or
+conflict with the first. Note it is `continue-on-error` in `collect-splits.yml`
+and deliberately not in `log-cfb.yml`: there a failed odds pull should stop the
+run, because the predictions after it would be meaningless, whereas here the
+NFL gate readings come afterwards and must not be skipped for it.
+
+### Do not compare a line from one source against a line from another
+
+The splits carry `line_at_capture`, which is Action Network's consensus, not
+DraftKings. Measured 2026-11-12 over 42 upcoming markets: mean 0.15 pts on
+spreads, 0.25 on totals, max 1.00, with 5 markets a full point apart -- enough
+to cross a 1.5-point bar on source disagreement alone. `log_gate_readings.py`
+therefore computes movement from DraftKings and stores `line_at_splits` for
+audit only. A stale DraftKings line is not a licence to substitute Action's;
+the fix is a fresher DraftKings pull, which is what the step above is for.
 
 ## Open question, not yet measured
 

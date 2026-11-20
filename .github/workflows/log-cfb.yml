@@ -64,6 +64,11 @@ jobs:
         run: python scripts/download_models.py
 
       - name: Fetch current CFB odds
+        # ALSO RUNS in collect-splits.yml as "College lines", added
+        # 2026-11-20 so the line is captured in the same run as the splits
+        # rather than up to 4h earlier. Both are kept: the two workflows
+        # fire in independent scheduler waves, which is the only thing that
+        # actually raises the capture rate. See .github/workflows/README.md.
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
