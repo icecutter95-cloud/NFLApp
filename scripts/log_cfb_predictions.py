@@ -53,6 +53,7 @@ warnings.filterwarnings("ignore")
 from config import DATA_DIR, MODELS_DIR
 from cfb_teams import cfbd_to_key
 from score_week import supabase, fetch_all
+from fetch_cfb_odds import ANCHOR
 from build_cfb_dataset import (FEATURE_COLS, PRESEASON_COLS, INSEASON_COLS,
                                haversine)
 
@@ -267,7 +268,12 @@ def write_prediction_log(rows, model_h, code_v):
     now = pd.Timestamp.now(tz="UTC")
 
     # The live line, and the most recent splits capture, per game.
-    hist = pd.DataFrame(fetch_all("cfb_line_history"))
+    # ANCHOR ONLY. cfb_line_history holds one row per book since
+    # 2026-11-20, and all four books in a pull share an identical
+    # recorded_at (Postgres now() is transaction time), so an unfiltered
+    # sort_values("recorded_at") + .iloc[-1] below would take an
+    # arbitrary book as "the live line".
+    hist = pd.DataFrame(fetch_all("cfb_line_history", book=ANCHOR))
     live = {}
     if not hist.empty:
         hist = hist.sort_values("recorded_at")
@@ -359,7 +365,11 @@ def write_prediction_log(rows, model_h, code_v):
 def main():
     dry = "--dry-run" in sys.argv
 
-    lines = pd.DataFrame(fetch_all("cfb_line_history"))
+    # ANCHOR ONLY -- see the note on hist above. The .first() after
+    # sort_values("recorded_at") further down picks the opener, and with
+    # four books tied on recorded_at it would pick one at random,
+    # silently restating every graded college number.
+    lines = pd.DataFrame(fetch_all("cfb_line_history", book=ANCHOR))
     if lines.empty:
         print("No rows in cfb_line_history — run fetch_cfb_odds.py first")
         return

@@ -68,6 +68,43 @@ create table if not exists public.preseason_results (
 -- See supabase migrations cfb_open_close_one_row_per_game and
 -- cfb_tracking_join_on_game_id for the full view bodies as applied.
 
+-- cfb_open_close_anchor_on_draftkings (2026-11-20) added `where book =
+-- 'draftkings'` as a single cte that the view's three base reads share.
+--
+-- cfb_line_history held exactly one book for its whole life (27,290 rows, all
+-- draftkings), so nothing filtered on book anywhere. It now carries four --
+-- draftkings, fanduel, betonlineag, lowvig -- so that movement measured at
+-- BetOnline can be compared against DraftKings in a few weeks, and so that
+-- games where DraftKings lags BetOnline can be tested as a signal of their
+-- own. Neither question can be asked retrospectively, hence collecting now.
+--
+-- Without the filter this view would have broken silently and badly. It takes
+-- the opener as row_number() over (partition by game_id order by recorded_at)
+-- = 1, and Postgres now() is transaction time, so all four books written by a
+-- single INSERT share an identical recorded_at. The opener and the close would
+-- have become whichever book the planner happened to rank first, and
+-- n_snapshots would have quadrupled -- silently restating clv_points, result
+-- and direction_correct across the entire college record, which is the one
+-- market with a demonstrated edge.
+--
+-- DRAFTKINGS REMAINS THE OFFICIAL MEASURE. Verified a byte-identical no-op at
+-- the time of the change (693 rows, md5 ab2320fdaa07db96f1f6ba7dd2c49cd2
+-- either side), then verified again after the first multi-book write: openers
+-- unchanged (md5 09b5e10201e5a801aef34e5a81e7a182) and sum(n_snapshots) rose
+-- 26,846 -> 26,916, which is +70 for the draftkings rows and not +260 for all
+-- four books.
+--
+-- The same migration added index cfb_lh_book_game_idx on (book, game_id,
+-- recorded_at), since the table roughly quadruples and every read is now
+-- filtered by book.
+--
+-- Two readers outside this view needed the same guard and got it in
+-- scripts/log_cfb_predictions.py: the live-line lookup and the weekly-opener
+-- .first(). scripts/test_splits_movement.py deliberately keeps taking a median
+-- across books, which is what it already did for the NFL -- see the note
+-- there, its college figures are no longer DraftKings and are not comparable
+-- across 2026-11-20.
+
 -- 5. cfb_public_splits  -- hand-captured bets%/money%, applied 2026-08-31.
 -- 6. cfb_signal         -- model lean x public money x line movement.
 --

@@ -104,6 +104,15 @@ def analyse(league, min_hours):
 
     # One line per (game, timestamp): the median across books, so a single
     # outlier book cannot masquerade as movement.
+    #
+    # This was written for the NFL's multi-book line_history and was a median
+    # of ONE for college, which held draftkings alone. Since 2026-11-20
+    # cfb_line_history carries four books, so the college numbers here are now
+    # a genuine median of up to four and are no longer DraftKings. That is this
+    # script's intended design and matches what it already did for the NFL, but
+    # it does mean figures produced here before and after that date are not
+    # directly comparable. The GRADED college record is unaffected: it comes
+    # from cfb_open_close, which is anchored on draftkings.
     key = ["home_team", "away_team"] if cfg["join"] == "teams" else ["game_id"]
     lines = (lines.groupby(key + ["recorded_at"], as_index=False)
              .agg(spread_home=("spread_home", "median"), total=("total", "median")))
