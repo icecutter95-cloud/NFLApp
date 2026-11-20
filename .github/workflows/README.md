@@ -100,12 +100,21 @@ more often is to run it in a second workflow, not to ask for it more often.**
 
 `scripts/fetch_cfb_splits.py` runs in `collect-splits.yml` (as "College
 splits") and `log-cfb.yml` (as "Fetch public betting splits"), and also lands
-at a fixed 04:00 and 16:00 UTC from a path outside GitHub -- almost certainly
-`collect_splits.bat` still running as a local scheduled task. Those fixed-time
-captures carry far more rows than the GitHub waves (345-365 against ~107), so
-they are a separate, more thorough pass. Three paths in all. The redundancy
-started as an accident and is now load-bearing; merging the workflows would
-quietly drop it.
+at a fixed 04:00 and 16:00 UTC from a path outside GitHub:
+`scripts/collect_splits.bat`, run by a Windows scheduled task named "Betting
+splits" at 09:00 and 21:00 local. Confirmed 2026-11-20: state Ready, last
+result 0. Three paths in all.
+
+The two kinds of path are equally thorough. Over the 7 days to 2026-11-20 the
+GitHub waves averaged **103.3 rows per capture** across 45 captures and the
+scheduled task **99.7** across 14 -- about 6.4 captures a day from CI and 2
+from the task. An earlier version of this file claimed the task's captures
+were far larger (345-365 against ~107); that was an artifact of grouping by
+clock time, since 04:00 and 16:00 recur daily and accumulate while each
+throttled GitHub timestamp appears once.
+
+The redundancy started as an accident and is now load-bearing; merging the
+workflows would quietly drop it.
 
 `scripts/fetch_cfb_odds.py` had exactly one path until 2026-11-20 and now runs
 in both workflows too, for a measured reason. Over the 4 days to 2026-11-20:
